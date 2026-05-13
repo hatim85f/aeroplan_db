@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const defaults = require('./default.json');
 
 const connectDB = async () => {
-  const mongoURI = process.env.MONGO_URI || defaults.mongoURI;
+  const mongoURI = process.env.MONGO_URI || process.env.mongoURI || defaults.mongoURI;
 
   try {
     await mongoose.connect(mongoURI);

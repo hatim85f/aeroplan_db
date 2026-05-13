@@ -27,7 +27,7 @@ app.get('/', (req, res) => {
     message: 'Aeroplan DB server is running',
     fields: {
       environment: process.env.NODE_ENV || 'development',
-      mongoConfigured: Boolean(process.env.MONGO_URI),
+      mongoConfigured: Boolean(process.env.MONGO_URI || process.env.mongoURI),
       timestamp: new Date().toISOString()
     }
   });
