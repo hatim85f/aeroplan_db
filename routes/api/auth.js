@@ -31,11 +31,21 @@ const buildFirebaseProfile = (firebaseUser) => {
   };
 };
 
+const getBusinessEmailUpdate = (businessEmail) => {
+  if (!businessEmail) {
+    return {};
+  }
+
+  return {
+    businessEmail: String(businessEmail).toLowerCase().trim()
+  };
+};
+
 // Postman test:
 // 1. Login/signup in Firebase on the frontend.
 // 2. Get the Firebase ID token from the frontend Firebase user.
 // 3. Send Authorization: Bearer <firebaseIdToken>.
-// 4. POST /api/auth/sync-user to create/update the MongoDB business profile.
+// 4. POST /api/auth/sync-user with businessEmail to create/update the MongoDB business profile.
 router.post('/sync-user', firebaseAuth, async (req, res, next) => {
   try {
     const firebaseProfile = buildFirebaseProfile(req.firebaseUser);
@@ -50,6 +60,7 @@ router.post('/sync-user', firebaseAuth, async (req, res, next) => {
     const now = new Date();
     const update = {
       ...firebaseProfile,
+      ...getBusinessEmailUpdate(req.body.businessEmail),
       lastLoginAt: now,
       lastActivityAt: now,
       onlineStatus: 'online'

@@ -1,8 +1,8 @@
 # AeroPlan Backend
 
-Firebase handles signup and login. MongoDB stores the business user profile, role, team structure, assigned items, snapshots, and app data.
+Firebase handles signup and login. MongoDB stores the business user profile, business email, role, team structure, assigned items, snapshots, and app data.
 
-No raw password is stored in MongoDB. JWT is not used for backend authentication. Google and Email/Password login both happen through Firebase Authentication, and both flows provide a Firebase ID token.
+No raw password is stored in MongoDB. JWT is not used for backend authentication. Google and Email/Password login both happen through Firebase Authentication, and both flows provide a Firebase ID token. The Firebase email is stored as the auth identity email; the app should use `businessEmail` for business workflows.
 
 ## Local Setup
 
@@ -35,7 +35,7 @@ For `FIREBASE_PRIVATE_KEY`, keep escaped newlines as `\n` when storing it as one
 Authorization: Bearer <firebaseIdToken>
 ```
 
-4. Call `POST /api/auth/sync-user` to create/update the MongoDB profile.
+4. Call `POST /api/auth/sync-user` with `businessEmail` to create/update the MongoDB profile.
 5. Call `GET /api/auth/me` to fetch the MongoDB profile.
 
 The backend verifies the Firebase ID token and returns the synced MongoDB user profile. `sync-user` also echoes the verified Firebase ID token as `token` so API clients can keep a consistent token response shape; it is not a backend JWT.
@@ -78,7 +78,9 @@ Content-Type: application/json
 Body:
 
 ```json
-{}
+{
+  "businessEmail": "rep@company.com"
+}
 ```
 
 Success:
@@ -92,7 +94,8 @@ Success:
   "data": {
     "_id": "mongo-user-id",
     "firebaseUid": "firebase-uid",
-    "email": "user@example.com",
+    "email": "google-or-firebase-auth-email@example.com",
+    "businessEmail": "rep@company.com",
     "emailVerified": true,
     "authProviders": ["google"],
     "role": "representative",
@@ -122,7 +125,8 @@ Success:
   "data": {
     "_id": "mongo-user-id",
     "firebaseUid": "firebase-uid",
-    "email": "user@example.com",
+    "email": "google-or-firebase-auth-email@example.com",
+    "businessEmail": "rep@company.com",
     "createdAt": "2026-05-13T00:00:00.000Z",
     "updatedAt": "2026-05-13T00:00:00.000Z"
   }

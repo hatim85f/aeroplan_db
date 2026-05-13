@@ -54,6 +54,13 @@ const userSchema = new Schema(
       lowercase: true,
       trim: true
     },
+    businessEmail: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      unique: true,
+      sparse: true
+    },
     emailVerified: {
       type: Boolean,
       default: false
