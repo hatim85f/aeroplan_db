@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
+const authRoutes = require('./routes/api/auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -24,12 +25,28 @@ if (process.env.NODE_ENV !== 'test') {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'Aeroplan DB server is running',
+    message: 'AeroPlan API running',
     fields: {
       environment: process.env.NODE_ENV || 'development',
       mongoConfigured: Boolean(process.env.MONGO_URI || process.env.mongoURI),
       timestamp: new Date().toISOString()
     }
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'AeroPlan API running'
+  });
+});
+
+app.use('/api/auth', authRoutes);
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.originalUrl}`
   });
 });
 
