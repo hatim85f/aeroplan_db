@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
 
@@ -14,9 +14,9 @@ const performanceSnapshotSchema = new Schema(
     currentMonthAchievementPercentage: { type: Number, default: 0 },
     totalActiveAccounts: { type: Number, default: 0 },
     activeTasks: { type: Number, default: 0 },
-    pendingOrders: { type: Number, default: 0 }
+    pendingOrders: { type: Number, default: 0 },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const forecastSnapshotSchema = new Schema(
@@ -26,18 +26,22 @@ const forecastSnapshotSchema = new Schema(
     forecastAchievementPercentage: { type: Number, default: 0 },
     forecastDeviationValue: { type: Number, default: 0 },
     forecastDeviationPercentage: { type: Number, default: 0 },
-    lastForecastUpdate: Date
+    lastForecastUpdate: Date,
   },
-  { _id: false }
+  { _id: false },
 );
 
 const settingsSchema = new Schema(
   {
-    language: { type: String, default: 'en' },
-    themePreference: { type: String, enum: ['system', 'light', 'dark'], default: 'system' },
-    notificationsEnabled: { type: Boolean, default: true }
+    language: { type: String, default: "en" },
+    themePreference: {
+      type: String,
+      enum: ["system", "light", "dark"],
+      default: "system",
+    },
+    notificationsEnabled: { type: Boolean, default: true },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const userSchema = new Schema(
@@ -47,128 +51,125 @@ const userSchema = new Schema(
       required: true,
       lowercase: true,
       trim: true,
-      unique: true
+      unique: true,
     },
     emailVerified: {
       type: Boolean,
-      default: false
+      default: false,
     },
     authProviders: [
       {
         type: String,
-        enum: ['password']
-      }
+        enum: ["password"],
+      },
     ],
     passwordHash: {
       type: String,
-      select: false
+      select: false,
     },
-    displayName: {
-      type: String,
-      trim: true
-    },
+
     userName: {
       type: String,
       unique: true,
       sparse: true,
-      trim: true
+      trim: true,
     },
     profilePicture: String,
     fullName: {
       type: String,
-      trim: true
+      trim: true,
     },
     phone: {
       type: String,
-      trim: true
+      trim: true,
     },
     phoneE164: {
       type: String,
-      trim: true
+      trim: true,
     },
     designation: {
       type: String,
-      trim: true
+      trim: true,
     },
     position: {
       type: String,
-      trim: true
+      trim: true,
     },
     employeeCode: {
       type: String,
-      trim: true
+      trim: true,
     },
     joinDate: Date,
     organizationId: {
       type: Schema.Types.ObjectId,
-      ref: 'Organization'
+      ref: "Organization",
     },
     teamId: {
       type: Schema.Types.ObjectId,
-      ref: 'Team'
+      ref: "Team",
     },
     managerId: {
       type: Schema.Types.ObjectId,
-      ref: 'User'
+      ref: "User",
     },
     lineId: {
       type: String,
-      trim: true
+      trim: true,
     },
     territory: {
       type: String,
-      trim: true
+      trim: true,
     },
     area: {
       type: String,
-      trim: true
+      trim: true,
     },
     role: {
       type: String,
-      enum: ['admin', 'manager', 'representative'],
-      default: 'representative'
+      enum: ["admin", "manager", "representative"],
+      default: "representative",
     },
     status: {
       type: String,
-      enum: ['pending', 'active', 'suspended', 'inactive'],
-      default: 'pending'
+      enum: ["pending", "active", "suspended", "inactive"],
+      default: "pending",
     },
     responsibleItems: [
       {
         type: Schema.Types.ObjectId,
-        ref: 'Item'
-      }
+        ref: "Item",
+      },
     ],
     yearlyTargetValue: {
       type: Number,
-      default: 0
+      default: 0,
     },
     yearlyTargetUnits: {
       type: Number,
-      default: 0
+      default: 0,
     },
     targetYear: Number,
     performanceSnapshot: {
       type: performanceSnapshotSchema,
-      default: () => ({})
+      default: () => ({}),
     },
     forecastSnapshot: {
       type: forecastSnapshotSchema,
-      default: () => ({})
+      default: () => ({}),
     },
     settings: {
       type: settingsSchema,
-      default: () => ({})
+      default: () => ({}),
     },
     lastLoginAt: Date,
     lastActivityAt: Date,
     onlineStatus: {
       type: String,
-      enum: ['online', 'offline', 'away'],
-      default: 'offline'
-    }
+      enum: ["online", "offline", "away"],
+      default: "offline",
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-module.exports = mongoose.model('User', userSchema);
+module.exports = mongoose.model("User", userSchema);
