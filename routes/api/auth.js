@@ -14,7 +14,7 @@ const createBackendToken = (user) => {
   return jwt.sign(
     {
       id: user.id,
-      businessEmail: user.businessEmail,
+      email: user.email,
       authProvider: 'password'
     },
     getJwtSecret(),
@@ -51,15 +51,15 @@ const backendAuth = async (req, res, next) => {
   }
 };
 
-// Email/Password registration using businessEmail as the primary login email.
+// Email/Password registration using email as the primary login identity.
 router.post('/register', async (req, res, next) => {
   try {
-    const { businessEmail, password, fullName, displayName, userName, phone } = req.body;
+    const { email, password, fullName, displayName, userName, phone } = req.body;
 
-    if (!businessEmail || !password) {
+    if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: 'businessEmail and password are required'
+        message: 'email and password are required'
       });
     }
 
@@ -70,21 +70,20 @@ router.post('/register', async (req, res, next) => {
       });
     }
 
-    const normalizedBusinessEmail = String(businessEmail).toLowerCase().trim();
-    const existingUser = await User.findOne({ businessEmail: normalizedBusinessEmail });
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const existingUser = await User.findOne({ email: normalizedEmail });
 
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: 'Business email already exists'
+        message: 'Email already exists'
       });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const now = new Date();
     const user = await User.create({
-      businessEmail: normalizedBusinessEmail,
-      email: normalizedBusinessEmail,
+      email: normalizedEmail,
       passwordHash,
       authProviders: ['password'],
       fullName,
@@ -114,22 +113,22 @@ router.post('/register', async (req, res, next) => {
 // Email/Password login.
 router.post('/login', async (req, res, next) => {
   try {
-    const { businessEmail, password } = req.body;
+    const { email, password } = req.body;
 
-    if (!businessEmail || !password) {
+    if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: 'businessEmail and password are required'
+        message: 'email and password are required'
       });
     }
 
-    const normalizedBusinessEmail = String(businessEmail).toLowerCase().trim();
-    const user = await User.findOne({ businessEmail: normalizedBusinessEmail }).select('+passwordHash');
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const user = await User.findOne({ email: normalizedEmail }).select('+passwordHash');
 
     if (!user || !user.passwordHash) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid business email or password'
+        message: 'Invalid email or password'
       });
     }
 
@@ -138,7 +137,7 @@ router.post('/login', async (req, res, next) => {
     if (!passwordMatches) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid business email or password'
+        message: 'Invalid email or password'
       });
     }
 

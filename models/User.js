@@ -44,11 +44,6 @@ const userSchema = new Schema(
   {
     email: {
       type: String,
-      lowercase: true,
-      trim: true
-    },
-    businessEmail: {
-      type: String,
       required: true,
       lowercase: true,
       trim: true,

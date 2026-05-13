@@ -1,8 +1,8 @@
 # AeroPlan Backend
 
-MongoDB stores the business user profile, business email, role, team structure, assigned items, snapshots, and app data.
+MongoDB stores the business user profile, email, role, team structure, assigned items, snapshots, and app data.
 
-Authentication is handled by the backend with `businessEmail` and `password`. Raw passwords are never stored in MongoDB; only `passwordHash` is stored and hidden from API responses.
+Authentication is handled by the backend with `email` and `password`. Raw passwords are never stored in MongoDB; only `passwordHash` is stored and hidden from API responses.
 
 ## Local Setup
 
@@ -56,13 +56,13 @@ Success:
 
 ### POST /api/auth/register
 
-Email/Password registration using business email.
+Email/Password registration.
 
 Body:
 
 ```json
 {
-  "businessEmail": "rep@company.com",
+  "email": "rep@company.com",
   "password": "StrongPass123",
   "fullName": "Sales Rep",
   "phone": "+971500000000"
@@ -80,7 +80,7 @@ Success:
   "expiresIn": "7d",
   "data": {
     "_id": "mongo-user-id",
-    "businessEmail": "rep@company.com",
+    "email": "rep@company.com",
     "authProviders": ["password"],
     "role": "representative",
     "status": "pending",
@@ -92,13 +92,13 @@ Success:
 
 ### POST /api/auth/login
 
-Email/Password login using business email.
+Email/Password login.
 
 Body:
 
 ```json
 {
-  "businessEmail": "rep@company.com",
+  "email": "rep@company.com",
   "password": "StrongPass123"
 }
 ```
@@ -114,7 +114,7 @@ Success:
   "expiresIn": "7d",
   "data": {
     "_id": "mongo-user-id",
-    "businessEmail": "rep@company.com",
+    "email": "rep@company.com",
     "createdAt": "2026-05-13T00:00:00.000Z",
     "updatedAt": "2026-05-13T00:00:00.000Z"
   }
@@ -139,7 +139,7 @@ Success:
   "message": "User profile fetched successfully",
   "data": {
     "_id": "mongo-user-id",
-    "businessEmail": "rep@company.com",
+    "email": "rep@company.com",
     "createdAt": "2026-05-13T00:00:00.000Z",
     "updatedAt": "2026-05-13T00:00:00.000Z"
   }
@@ -151,14 +151,14 @@ Error examples:
 ```json
 {
   "success": false,
-  "message": "businessEmail and password are required"
+  "message": "email and password are required"
 }
 ```
 
 ```json
 {
   "success": false,
-  "message": "Invalid business email or password"
+  "message": "Invalid email or password"
 }
 ```
 
