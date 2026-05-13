@@ -42,12 +42,6 @@ const settingsSchema = new Schema(
 
 const userSchema = new Schema(
   {
-    firebaseUid: {
-      type: String,
-      unique: true,
-      sparse: true,
-      trim: true
-    },
     email: {
       type: String,
       lowercase: true,
@@ -55,10 +49,10 @@ const userSchema = new Schema(
     },
     businessEmail: {
       type: String,
+      required: true,
       lowercase: true,
       trim: true,
-      unique: true,
-      sparse: true
+      unique: true
     },
     emailVerified: {
       type: Boolean,
@@ -67,7 +61,7 @@ const userSchema = new Schema(
     authProviders: [
       {
         type: String,
-        enum: ['google', 'password']
+        enum: ['password']
       }
     ],
     passwordHash: {
