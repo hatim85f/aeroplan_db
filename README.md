@@ -2,7 +2,7 @@
 
 Firebase handles signup and login. MongoDB stores the business user profile, business email, role, team structure, assigned items, snapshots, and app data.
 
-No raw password is stored in MongoDB. JWT is not used for backend authentication. Google and Email/Password login both happen through Firebase Authentication, and both flows provide a Firebase ID token. The Firebase email is stored as the auth identity email; the app should use `businessEmail` for business workflows.
+No raw password is stored in MongoDB. Google login happens through Firebase Authentication. Email/Password is handled separately by the backend for testing and uses `businessEmail` as the login identity. The Firebase email is stored as the auth identity email; the app should use `businessEmail` for business workflows.
 
 ## Local Setup
 
@@ -18,6 +18,7 @@ Create `.env` locally or configure these on Render, Railway, or Heroku:
 ```env
 PORT=5000
 MONGO_URI=
+JWT_SECRET=
 FIREBASE_PROJECT_ID=
 FIREBASE_CLIENT_EMAIL=
 FIREBASE_PRIVATE_KEY=
@@ -27,7 +28,7 @@ For `FIREBASE_PRIVATE_KEY`, keep escaped newlines as `\n` when storing it as one
 
 ## Firebase Token Flow
 
-1. User logs in or signs up on the frontend using Firebase Google or Email/Password.
+1. User logs in or signs up on the frontend using Firebase Google.
 2. Frontend gets the Firebase ID token from the logged-in Firebase user.
 3. Frontend sends the token to this backend:
 
@@ -39,6 +40,15 @@ Authorization: Bearer <firebaseIdToken>
 5. Call `GET /api/auth/me` to fetch the MongoDB profile.
 
 The backend verifies the Firebase ID token and returns the synced MongoDB user profile. `sync-user` also echoes the verified Firebase ID token as `token` so API clients can keep a consistent token response shape; it is not a backend JWT.
+
+## Backend Email/Password Flow
+
+Use this flow for backend-only testing with `businessEmail`.
+
+1. Register with `POST /api/auth/register`.
+2. Login with `POST /api/auth/login`.
+3. Use the returned backend token as `Authorization: Bearer <backendToken>`.
+4. Call `GET /api/auth/me-password`.
 
 ## Postman Setup
 
@@ -104,6 +114,83 @@ Success:
     "updatedAt": "2026-05-13T00:00:00.000Z"
   }
 }
+```
+
+### POST /api/auth/register
+
+Backend Email/Password registration using business email.
+
+Body:
+
+```json
+{
+  "businessEmail": "rep@company.com",
+  "password": "StrongPass123",
+  "fullName": "Sales Rep",
+  "phone": "+971500000000"
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "User registered successfully",
+  "token": "backend-jwt-token",
+  "tokenType": "Backend JWT",
+  "expiresIn": "7d",
+  "data": {
+    "_id": "mongo-user-id",
+    "businessEmail": "rep@company.com",
+    "authProviders": ["password"],
+    "role": "representative",
+    "status": "pending",
+    "createdAt": "2026-05-13T00:00:00.000Z",
+    "updatedAt": "2026-05-13T00:00:00.000Z"
+  }
+}
+```
+
+### POST /api/auth/login
+
+Backend Email/Password login using business email.
+
+Body:
+
+```json
+{
+  "businessEmail": "rep@company.com",
+  "password": "StrongPass123"
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "User logged in successfully",
+  "token": "backend-jwt-token",
+  "tokenType": "Backend JWT",
+  "expiresIn": "7d",
+  "data": {
+    "_id": "mongo-user-id",
+    "businessEmail": "rep@company.com",
+    "createdAt": "2026-05-13T00:00:00.000Z",
+    "updatedAt": "2026-05-13T00:00:00.000Z"
+  }
+}
+```
+
+### GET /api/auth/me-password
+
+Protected by the backend token returned from register/login.
+
+Headers:
+
+```http
+Authorization: Bearer <backendToken>
 ```
 
 ### GET /api/auth/me

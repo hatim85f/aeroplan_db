@@ -44,13 +44,12 @@ const userSchema = new Schema(
   {
     firebaseUid: {
       type: String,
-      required: true,
       unique: true,
+      sparse: true,
       trim: true
     },
     email: {
       type: String,
-      required: true,
       lowercase: true,
       trim: true
     },
@@ -71,6 +70,10 @@ const userSchema = new Schema(
         enum: ['google', 'password']
       }
     ],
+    passwordHash: {
+      type: String,
+      select: false
+    },
     displayName: {
       type: String,
       trim: true
