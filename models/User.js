@@ -100,10 +100,6 @@ const userSchema = new Schema(
       trim: true,
     },
     joinDate: Date,
-    organizationId: {
-      type: Schema.Types.ObjectId,
-      ref: "Organization",
-    },
     teamId: {
       type: Schema.Types.ObjectId,
       ref: "Team",
@@ -111,7 +107,15 @@ const userSchema = new Schema(
     managerId: {
       type: Schema.Types.ObjectId,
       ref: "User",
+      index: true,
     },
+    path: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+        index: true,
+      },
+    ],
     lineId: {
       type: String,
       trim: true,

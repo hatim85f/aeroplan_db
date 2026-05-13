@@ -1,6 +1,6 @@
 # AeroPlan Backend
 
-MongoDB stores the business user profile, email, role, team structure, assigned items, snapshots, and app data.
+MongoDB stores the user profile, email, manager hierarchy, team structure, assigned items, snapshots, and app data.
 
 Authentication is handled by the backend with `email` and `password`. Raw passwords are never stored in MongoDB; only `passwordHash` is stored and hidden from API responses.
 
@@ -29,6 +29,15 @@ JWT_SECRET=
 4. Call `GET /api/auth/me`.
 
 The returned token is a backend JWT and expires in 7 days.
+
+Managers and senior managers are represented with:
+
+```js
+managerId
+path
+```
+
+`managerId` is the direct manager. `path` stores all managers above the user, so a future senior manager can access everyone below them without redesigning the database.
 
 ## Postman Setup
 
@@ -65,7 +74,9 @@ Body:
   "email": "rep@company.com",
   "password": "StrongPass123",
   "fullName": "Sales Rep",
-  "phone": "+971500000000"
+  "phone": "+971500000000",
+  "role": "representative",
+  "managerId": "manager-user-id"
 }
 ```
 
@@ -81,6 +92,8 @@ Success:
   "data": {
     "_id": "mongo-user-id",
     "email": "rep@company.com",
+    "managerId": "manager-user-id",
+    "path": ["senior-manager-id", "manager-user-id"],
     "authProviders": ["password"],
     "role": "representative",
     "status": "pending",

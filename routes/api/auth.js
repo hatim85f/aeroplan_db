@@ -28,6 +28,28 @@ const sanitizeUser = (user) => {
   return userObject;
 };
 
+const buildHierarchy = async (managerId) => {
+  if (!managerId) {
+    return {
+      managerId: undefined,
+      path: [],
+    };
+  }
+
+  const manager = await User.findById(managerId);
+
+  if (!manager) {
+    const error = new Error("Manager not found");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    managerId: manager._id,
+    path: [...(manager.path || []), manager._id],
+  };
+};
+
 const backendAuth = async (req, res, next) => {
   const authHeader = req.header("Authorization");
   const token =
@@ -55,7 +77,8 @@ const backendAuth = async (req, res, next) => {
 // Email/Password registration using email as the primary login identity.
 router.post("/register", async (req, res, next) => {
   try {
-    const { email, password, fullName, userName, phone, role } = req.body;
+    const { email, password, fullName, userName, phone, role, managerId } =
+      req.body;
 
     if (!email || !password) {
       return res.status(400).json({
@@ -81,6 +104,7 @@ router.post("/register", async (req, res, next) => {
       });
     }
 
+    const hierarchy = await buildHierarchy(managerId);
     const passwordHash = await bcrypt.hash(password, 10);
     const now = new Date();
     const user = await User.create({
@@ -91,6 +115,8 @@ router.post("/register", async (req, res, next) => {
       userName,
       phone,
       role: role || "representative",
+      managerId: hierarchy.managerId,
+      path: hierarchy.path,
       status: "pending",
       lastLoginAt: now,
       lastActivityAt: now,

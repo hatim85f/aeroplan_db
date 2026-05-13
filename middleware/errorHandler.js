@@ -1,5 +1,5 @@
 const errorHandler = (error, req, res, next) => {
-  let statusCode = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
+  let statusCode = error.statusCode || (res.statusCode && res.statusCode !== 200 ? res.statusCode : 500);
   let message = error.message || 'Server error';
   let errors;
 
