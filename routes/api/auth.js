@@ -90,7 +90,7 @@ router.post("/register", async (req, res, next) => {
       fullName,
       userName,
       phone,
-      role: "representative",
+      role: role || "representative",
       status: "pending",
       lastLoginAt: now,
       lastActivityAt: now,
