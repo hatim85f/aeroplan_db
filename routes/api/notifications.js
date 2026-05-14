@@ -2,7 +2,8 @@ const express = require("express");
 const auth = require("../../middleware/auth");
 const Notification = require("../../models/Notification");
 const User = require("../../models/User");
-const { isExpoPushToken, sendExpoPushNotifications } = require("../../helpers/expoPush");
+const { isExpoPushToken } = require("../../helpers/expoPush");
+const { createAndSendNotification } = require("../../helpers/notificationDispatcher");
 
 const router = express.Router();
 
@@ -171,34 +172,15 @@ router.post("/send", auth, async (req, res, next) => {
 
     const notifications = await Promise.all(
       recipients.map(async (recipient) => {
-        const notification = await Notification.create({
+        return createAndSendNotification({
+          from: req.user.id,
+          to: recipient._id,
           title,
           subtitle,
           routeName,
           payload,
-          from: req.user.id,
-          to: recipient._id,
-          timeStamp: new Date(),
+          recipient,
         });
-        const tokens = (recipient.notificationTokens || []).map((item) => item.token);
-        const pushResult = await sendExpoPushNotifications({
-          tokens,
-          title,
-          subtitle,
-          routeName,
-          payload: {
-            notificationId: String(notification._id),
-            ...payload,
-          },
-        });
-
-        notification.status = pushResult.status;
-        notification.sentAt = new Date();
-        notification.expoTickets = pushResult.tickets;
-        notification.failedTokens = pushResult.failedTokens;
-        await notification.save();
-
-        return notification;
       }),
     );
 

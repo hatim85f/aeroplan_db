@@ -39,6 +39,8 @@ path
 
 `managerId` is the direct manager. `path` stores all managers above the user, so a future senior manager can access everyone below them without redesigning the database.
 
+Every user also gets a shareable `appId`, such as `AP-123456`. A representative can share this with a manager, and the manager can use it to send a team invitation.
+
 ## Postman Setup
 
 Set an environment variable named `token`, then add this header for protected routes:
@@ -247,6 +249,115 @@ Body for one recipient:
     "taskId": "task-id"
   }
 }
+```
+
+### POST /api/teams
+
+Creates a team for the logged-in manager.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body:
+
+```json
+{
+  "teamName": "Dubai Team A",
+  "logo": "https://example.com/logo.png",
+  "details": "Primary cardiology team",
+  "lineId": "cardio",
+  "territory": "Dubai"
+}
+```
+
+### GET /api/teams/my-teams
+
+Returns teams owned by the logged-in manager, or teams where the logged-in representative is a member.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### GET /api/teams/:id
+
+Returns one team if the logged-in user is the manager or a member.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### POST /api/team-invitations
+
+Manager sends a team invitation to a user by `appId`. The backend creates the invitation and sends a notification to the invited user with `routeName: "TeamInvitations"`.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body:
+
+```json
+{
+  "appId": "AP-123456",
+  "teamId": "team-id",
+  "message": "Please join Dubai Team A"
+}
+```
+
+Optional:
+
+```json
+{
+  "expiresAt": "2026-06-01T00:00:00.000Z"
+}
+```
+
+### GET /api/team-invitations
+
+Returns team invitations for the logged-in user.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Query examples:
+
+```text
+GET /api/team-invitations
+GET /api/team-invitations?status=pending
+GET /api/team-invitations?box=sent
+GET /api/team-invitations?box=sent&status=pending
+```
+
+### PATCH /api/team-invitations/:id/accept
+
+Accepts a pending invitation. The backend links the user to the selected team, sets `managerId`, rebuilds `path`, and adds the user to the team members list.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### PATCH /api/team-invitations/:id/reject
+
+Rejects a pending invitation.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
 ```
 
 Body for many recipients:

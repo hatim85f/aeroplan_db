@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const defaults = require("../../config/default.json");
 const User = require("../../models/User");
+const { createAppId } = require("../../helpers/appId");
 
 const router = express.Router();
 
@@ -48,6 +49,19 @@ const buildHierarchy = async (managerId) => {
     managerId: manager._id,
     path: [...(manager.path || []), manager._id],
   };
+};
+
+const createUniqueAppId = async () => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const appId = createAppId();
+    const existingUser = await User.exists({ appId });
+
+    if (!existingUser) {
+      return appId;
+    }
+  }
+
+  throw new Error("Could not generate unique app ID");
 };
 
 const backendAuth = async (req, res, next) => {
@@ -109,6 +123,7 @@ router.post("/register", async (req, res, next) => {
     const now = new Date();
     const user = await User.create({
       email: normalizedEmail,
+      appId: await createUniqueAppId(),
       passwordHash,
       authProviders: ["password"],
       fullName,
@@ -172,6 +187,9 @@ router.post("/login", async (req, res, next) => {
     user.lastLoginAt = new Date();
     user.lastActivityAt = new Date();
     user.onlineStatus = "online";
+    if (!user.appId) {
+      user.appId = await createUniqueAppId();
+    }
     if (!user.authProviders.includes("password")) {
       user.authProviders.push("password");
     }
@@ -208,6 +226,11 @@ router.get("/me", backendAuth, async (req, res, next) => {
         success: false,
         message: "User profile not found",
       });
+    }
+
+    if (!user.appId) {
+      user.appId = await createUniqueAppId();
+      await user.save();
     }
 
     return res.status(200).json({

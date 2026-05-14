@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
+const { createAppId } = require("../helpers/appId");
 
 const performanceSnapshotSchema = new Schema(
   {
@@ -76,6 +77,13 @@ const userSchema = new Schema(
       lowercase: true,
       trim: true,
       unique: true,
+    },
+    appId: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      default: createAppId,
     },
     emailVerified: {
       type: Boolean,

@@ -9,6 +9,14 @@ const teamSchema = new Schema(
       required: true,
       trim: true
     },
+    logo: {
+      type: String,
+      trim: true
+    },
+    details: {
+      type: String,
+      trim: true
+    },
     managerId: {
       type: Schema.Types.ObjectId,
       ref: 'User'
