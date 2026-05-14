@@ -159,6 +159,110 @@ Success:
 }
 ```
 
+### POST /api/notifications/register-token
+
+Stores an Expo push token for the logged-in user. One user can have many device tokens.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body:
+
+```json
+{
+  "token": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]",
+  "platform": "ios",
+  "deviceId": "device-123"
+}
+```
+
+### DELETE /api/notifications/remove-token
+
+Removes one Expo push token or one device token registration.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body:
+
+```json
+{
+  "token": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]"
+}
+```
+
+or:
+
+```json
+{
+  "deviceId": "device-123"
+}
+```
+
+### GET /api/notifications
+
+Returns the logged-in user's notifications.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### PATCH /api/notifications/:id/open
+
+Marks a notification as opened for the logged-in user.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### POST /api/notifications/send
+
+Creates one notification document per recipient and sends Expo push notifications to every stored token for each recipient. The frontend only sends notification details and recipient id(s); the backend handles storage and push delivery.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body for one recipient:
+
+```json
+{
+  "to": "recipientUserId",
+  "title": "New Task",
+  "subtitle": "You have a new task",
+  "routeName": "TaskDetails",
+  "payload": {
+    "taskId": "task-id"
+  }
+}
+```
+
+Body for many recipients:
+
+```json
+{
+  "to": ["recipientUserId1", "recipientUserId2"],
+  "title": "Target Updated",
+  "subtitle": "Your monthly target has been updated",
+  "routeName": "Targets",
+  "payload": {
+    "targetYear": 2026
+  }
+}
+```
+
 Error examples:
 
 ```json

@@ -44,6 +44,30 @@ const settingsSchema = new Schema(
   { _id: false },
 );
 
+const notificationTokenSchema = new Schema(
+  {
+    token: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    platform: {
+      type: String,
+      enum: ["ios", "android", "web", "unknown"],
+      default: "unknown",
+    },
+    deviceId: {
+      type: String,
+      trim: true,
+    },
+    lastUsedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false },
+);
+
 const userSchema = new Schema(
   {
     email: {
@@ -172,6 +196,7 @@ const userSchema = new Schema(
       enum: ["online", "offline", "away"],
       default: "offline",
     },
+    notificationTokens: [notificationTokenSchema],
   },
   { timestamps: true },
 );
