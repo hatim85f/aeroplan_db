@@ -161,6 +161,40 @@ Success:
 }
 ```
 
+### PATCH /api/auth/me/profile
+
+Updates the logged-in user's editable profile fields.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body:
+
+```json
+{
+  "fullName": "Sales Rep",
+  "userName": "salesrep1",
+  "profilePicture": "https://example.com/avatar.png",
+  "phone": "+971500000000",
+  "phoneE164": "+971500000000",
+  "designation": "Medical Representative",
+  "position": "Senior Medical Representative",
+  "employeeCode": "EMP-001",
+  "joinDate": "2026-05-15T00:00:00.000Z",
+  "lineId": "cardio",
+  "territory": "Dubai",
+  "area": "Dubai Marina",
+  "settings": {
+    "language": "en",
+    "themePreference": "system",
+    "notificationsEnabled": true
+  }
+}
+```
+
 ### POST /api/notifications/register-token
 
 Stores an Expo push token for the logged-in user. One user can have many device tokens.

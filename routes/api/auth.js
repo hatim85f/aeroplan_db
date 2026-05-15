@@ -243,4 +243,59 @@ router.get("/me", backendAuth, async (req, res, next) => {
   }
 });
 
+router.patch("/me/profile", backendAuth, async (req, res, next) => {
+  try {
+    const allowedFields = [
+      "fullName",
+      "userName",
+      "profilePicture",
+      "phone",
+      "phoneE164",
+      "designation",
+      "position",
+      "employeeCode",
+      "joinDate",
+      "lineId",
+      "territory",
+      "area",
+      "settings",
+    ];
+    const update = allowedFields.reduce((fields, field) => {
+      if (req.body[field] !== undefined) {
+        fields[field] = req.body[field];
+      }
+
+      return fields;
+    }, {});
+
+    update.lastActivityAt = new Date();
+
+    const user = await User.findByIdAndUpdate(
+      req.backendUser.id,
+      {
+        $set: update,
+      },
+      {
+        new: true,
+        runValidators: true,
+      },
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "User profile updated successfully",
+      data: user,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;
