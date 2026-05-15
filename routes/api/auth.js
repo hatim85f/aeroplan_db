@@ -86,6 +86,16 @@ const findUserProfileById = (userId) => {
     .populate("teamId", "teamName logo details territory lineId");
 };
 
+const formatUserProfile = (user) => {
+  const profile = sanitizeUser(user);
+  const manager = profile.managerId;
+
+  profile.managerName = manager ? manager.fullName || manager.email || "" : null;
+  delete profile.managerId;
+
+  return profile;
+};
+
 const createUniqueAppId = async () => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const appId = createAppId();
@@ -273,7 +283,7 @@ router.get("/me", backendAuth, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "User profile fetched successfully",
-      data: user,
+      data: formatUserProfile(user),
     });
   } catch (error) {
     return next(error);
@@ -339,7 +349,7 @@ router.patch("/me/profile", backendAuth, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "User profile updated successfully",
-      data: user,
+      data: formatUserProfile(user),
     });
   } catch (error) {
     return next(error);
