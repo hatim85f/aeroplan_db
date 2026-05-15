@@ -4,6 +4,7 @@ const Team = require("../../models/Team");
 const TeamInvitation = require("../../models/TeamInvitation");
 const User = require("../../models/User");
 const { createAndSendNotification } = require("../../helpers/notificationDispatcher");
+const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ const requireManager = async (req, res, next) => {
     });
   }
 
-  if (!["admin", "manager"].includes(user.role)) {
+  if (!isManagerRole(user.role)) {
     return res.status(403).json({
       success: false,
       message: "Only managers can invite team members",

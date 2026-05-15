@@ -2,6 +2,7 @@ const express = require("express");
 const auth = require("../../middleware/auth");
 const Team = require("../../models/Team");
 const User = require("../../models/User");
+const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
 
@@ -15,7 +16,7 @@ const requireManager = async (req, res, next) => {
     });
   }
 
-  if (!["admin", "manager"].includes(user.role)) {
+  if (!isManagerRole(user.role)) {
     return res.status(403).json({
       success: false,
       message: "Only managers can perform this action",
@@ -68,7 +69,7 @@ router.get("/my-teams", auth, async (req, res, next) => {
       });
     }
 
-    const query = ["admin", "manager"].includes(user.role)
+    const query = isManagerRole(user.role)
       ? { managerId: user._id }
       : { members: user._id };
     const teams = await Team.find(query).populate("managerId", "fullName email appId role");

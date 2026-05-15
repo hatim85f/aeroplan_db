@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const defaults = require("../../config/default.json");
 const User = require("../../models/User");
 const { createAppId } = require("../../helpers/appId");
+const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
 
@@ -67,7 +68,7 @@ const buildHierarchyByAppId = async (managerAppId, currentUserId) => {
     throw error;
   }
 
-  if (!["admin", "manager"].includes(manager.role)) {
+  if (!isManagerRole(manager.role)) {
     const error = new Error("The provided appId does not belong to a manager");
     error.statusCode = 400;
     throw error;
