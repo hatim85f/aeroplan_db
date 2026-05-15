@@ -51,6 +51,40 @@ const buildHierarchy = async (managerId) => {
   };
 };
 
+const buildHierarchyByAppId = async (managerAppId, currentUserId) => {
+  const normalizedManagerAppId = String(managerAppId).trim().toUpperCase();
+  const manager = await User.findOne({ appId: normalizedManagerAppId });
+
+  if (!manager) {
+    const error = new Error("Manager appId not found");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (String(manager._id) === String(currentUserId)) {
+    const error = new Error("You cannot assign yourself as manager");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!["admin", "manager"].includes(manager.role)) {
+    const error = new Error("The provided appId does not belong to a manager");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    managerId: manager._id,
+    path: [...(manager.path || []), manager._id],
+  };
+};
+
+const findUserProfileById = (userId) => {
+  return User.findById(userId)
+    .populate("managerId", "fullName email appId role profilePicture position territory area")
+    .populate("teamId", "teamName logo details territory lineId");
+};
+
 const createUniqueAppId = async () => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const appId = createAppId();
@@ -210,7 +244,7 @@ router.post("/login", async (req, res, next) => {
 
 router.get("/me", backendAuth, async (req, res, next) => {
   try {
-    const user = await User.findByIdAndUpdate(
+    let user = await User.findByIdAndUpdate(
       req.backendUser.id,
       {
         $set: {
@@ -232,6 +266,8 @@ router.get("/me", backendAuth, async (req, res, next) => {
       user.appId = await createUniqueAppId();
       await user.save();
     }
+
+    user = await findUserProfileById(req.backendUser.id);
 
     return res.status(200).json({
       success: true,
@@ -270,7 +306,16 @@ router.patch("/me/profile", backendAuth, async (req, res, next) => {
 
     update.lastActivityAt = new Date();
 
-    const user = await User.findByIdAndUpdate(
+    if (req.body.managerAppId !== undefined && req.body.managerAppId !== "") {
+      const hierarchy = await buildHierarchyByAppId(
+        req.body.managerAppId,
+        req.backendUser.id,
+      );
+      update.managerId = hierarchy.managerId;
+      update.path = hierarchy.path;
+    }
+
+    let user = await User.findByIdAndUpdate(
       req.backendUser.id,
       {
         $set: update,
@@ -287,6 +332,8 @@ router.patch("/me/profile", backendAuth, async (req, res, next) => {
         message: "User profile not found",
       });
     }
+
+    user = await findUserProfileById(req.backendUser.id);
 
     return res.status(200).json({
       success: true,

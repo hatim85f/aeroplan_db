@@ -105,6 +105,8 @@ Success:
 }
 ```
 
+`managerAppId` is optional. If provided, it must be the manager user's shareable `appId` such as `AP-123456`. The backend resolves it, updates `managerId`, and rebuilds the hierarchy `path`. The response returns populated `managerId` details.
+
 ### POST /api/auth/login
 
 Email/Password login.
@@ -187,6 +189,7 @@ Body:
   "lineId": "cardio",
   "territory": "Dubai",
   "area": "Dubai Marina",
+  "managerAppId": "AP-123456",
   "settings": {
     "language": "en",
     "themePreference": "system",
