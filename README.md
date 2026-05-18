@@ -429,13 +429,51 @@ Legacy `logo` and `details` are still accepted and mapped to `teamLogo` and `des
 
 ### GET /api/lines
 
-Returns lines for the team creation dropdown.
+Returns lines for the team creation dropdown. Each line also includes `numberOfTeams` and `numberOfMembers`.
 
 Headers:
 
 ```http
 Authorization: Bearer <token>
 ```
+
+Query examples:
+
+```text
+GET /api/lines
+GET /api/lines?isActive=true
+GET /api/lines?teamIsActive=true
+```
+
+### GET /api/lines/summary
+
+Returns the compact data needed for a lines page/card screen.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Line summary fetched successfully",
+  "data": [
+    {
+      "lineId": "CARDIO",
+      "lineName": "Cardiology",
+      "lineLogo": "https://example.com/cardio.png",
+      "numberOfTeams": 3,
+      "numberOfMembers": 18
+    }
+  ]
+}
+```
+
+For managers, counts are calculated from teams owned by the logged-in manager. Admins see counts across all teams.
 
 ### POST /api/lines
 
@@ -453,6 +491,7 @@ Body:
 {
   "lineId": "CARDIO",
   "lineName": "Cardiology",
+  "lineLogo": "https://example.com/cardio.png",
   "description": "Cardiology product line"
 }
 ```

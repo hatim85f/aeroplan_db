@@ -1,6 +1,7 @@
 const express = require("express");
 const auth = require("../../middleware/auth");
 const Line = require("../../models/Line");
+const Team = require("../../models/Team");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 
@@ -40,8 +41,93 @@ const requireManager = async (req, res, next) => {
   return next();
 };
 
+const buildLineStats = async ({ managerId, isActive }) => {
+  const match = {};
+
+  if (managerId) {
+    match.managerId = managerId;
+  }
+  if (isActive !== undefined) {
+    match.isActive = isActive;
+  }
+
+  const stats = await Team.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: "$lineId",
+        numberOfTeams: { $sum: 1 },
+        numberOfMembers: { $sum: { $size: { $ifNull: ["$members", []] } } },
+      },
+    },
+  ]);
+
+  return stats.reduce((map, item) => {
+    map[String(item._id || "").toUpperCase()] = {
+      numberOfTeams: item.numberOfTeams,
+      numberOfMembers: item.numberOfMembers,
+    };
+    return map;
+  }, {});
+};
+
+const formatLineWithStats = (line, statsByLineId) => {
+  const lineObject = line.toObject ? line.toObject() : line;
+  const stats = statsByLineId[normalizeLineId(lineObject.lineId)] || {
+    numberOfTeams: 0,
+    numberOfMembers: 0,
+  };
+
+  return {
+    ...lineObject,
+    numberOfTeams: stats.numberOfTeams,
+    numberOfMembers: stats.numberOfMembers,
+  };
+};
+
 router.get("/", auth, async (req, res, next) => {
   try {
+    const user = await User.findById(req.user.id);
+    const query = {};
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    if (req.query.isActive !== undefined) {
+      query.isActive = req.query.isActive === "true";
+    }
+
+    const lines = await Line.find(query).sort({ lineName: 1 });
+    const statsByLineId = await buildLineStats({
+      managerId: isManagerRole(user.role) && user.role !== "admin" ? user._id : undefined,
+      isActive: req.query.teamIsActive !== undefined ? req.query.teamIsActive === "true" : undefined,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Lines fetched successfully",
+      data: lines.map((line) => formatLineWithStats(line, statsByLineId)),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/summary", auth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
     const query = {};
 
     if (req.query.isActive !== undefined) {
@@ -49,11 +135,29 @@ router.get("/", auth, async (req, res, next) => {
     }
 
     const lines = await Line.find(query).sort({ lineName: 1 });
+    const statsByLineId = await buildLineStats({
+      managerId: isManagerRole(user.role) && user.role !== "admin" ? user._id : undefined,
+      isActive: req.query.teamIsActive !== undefined ? req.query.teamIsActive === "true" : undefined,
+    });
 
     return res.status(200).json({
       success: true,
-      message: "Lines fetched successfully",
-      data: lines,
+      message: "Line summary fetched successfully",
+      data: lines.map((line) => {
+        const lineObject = line.toObject();
+        const stats = statsByLineId[normalizeLineId(lineObject.lineId)] || {
+          numberOfTeams: 0,
+          numberOfMembers: 0,
+        };
+
+        return {
+          lineId: lineObject.lineId,
+          lineName: lineObject.lineName,
+          lineLogo: lineObject.lineLogo,
+          numberOfTeams: stats.numberOfTeams,
+          numberOfMembers: stats.numberOfMembers,
+        };
+      }),
     });
   } catch (error) {
     return next(error);
@@ -62,7 +166,7 @@ router.get("/", auth, async (req, res, next) => {
 
 router.post("/", auth, requireManager, async (req, res, next) => {
   try {
-    const { lineName, lineId, description, organizationId } = req.body;
+    const { lineName, lineId, lineLogo, logo, description, organizationId } = req.body;
 
     if (!lineName) {
       return res.status(400).json({
@@ -84,6 +188,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
     const line = await Line.create({
       lineId: normalizedLineId,
       lineName,
+      lineLogo: lineLogo || logo,
       description,
       organizationId,
       createdBy: req.user.id,

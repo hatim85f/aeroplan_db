@@ -17,6 +17,10 @@ const lineSchema = new Schema(
       required: true,
       trim: true,
     },
+    lineLogo: {
+      type: String,
+      trim: true,
+    },
     description: {
       type: String,
       trim: true,
