@@ -45,6 +45,13 @@ const buildHierarchy = async (managerId) => {
   return [...(manager.path || []), manager._id];
 };
 
+const populateInvitation = (query) => {
+  return query
+    .populate("fromManagerId", "fullName email appId role profilePicture")
+    .populate("toUserId", "fullName email appId role status teamId lineId territory area designation position")
+    .populate("teamId", "teamName teamCode teamLogo description lineId lineName territory area managerId");
+};
+
 router.post("/", auth, requireManager, async (req, res, next) => {
   try {
     const { appId, teamId, message, expiresAt } = req.body;
@@ -72,6 +79,13 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       });
     }
 
+    if (!team.isActive || team.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message: "You can only invite members to an active team",
+      });
+    }
+
     const invitedUser = await User.findOne({ appId: String(appId).trim().toUpperCase() });
 
     if (!invitedUser) {
@@ -88,16 +102,40 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       });
     }
 
+    if (invitedUser.role !== "representative") {
+      return res.status(400).json({
+        success: false,
+        message: "Only representatives can be invited to a team",
+      });
+    }
+
+    if (invitedUser.teamId) {
+      return res.status(409).json({
+        success: false,
+        message: "This representative already belongs to a team.",
+      });
+    }
+
+    const isAlreadyMember = team.members.some((memberId) => {
+      return String(memberId) === String(invitedUser._id);
+    });
+
+    if (isAlreadyMember) {
+      return res.status(409).json({
+        success: false,
+        message: "This representative is already in this team",
+      });
+    }
+
     const existingInvitation = await TeamInvitation.findOne({
       toUserId: invitedUser._id,
-      teamId: team._id,
       status: "pending",
     });
 
     if (existingInvitation) {
       return res.status(409).json({
         success: false,
-        message: "A pending invitation already exists for this user and team",
+        message: "A pending invitation already exists for this representative",
       });
     }
 
@@ -144,11 +182,7 @@ router.get("/", auth, async (req, res, next) => {
       query.status = status;
     }
 
-    const invitations = await TeamInvitation.find(query)
-      .populate("fromManagerId", "fullName email appId role")
-      .populate("toUserId", "fullName email appId role")
-      .populate("teamId", "teamName logo details managerId")
-      .sort({ createdAt: -1 });
+    const invitations = await populateInvitation(TeamInvitation.find(query)).sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
@@ -186,19 +220,46 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
       });
     }
 
-    const path = await buildHierarchy(invitation.fromManagerId);
     const currentUser = await User.findById(req.user.id);
 
-    if (currentUser.teamId && String(currentUser.teamId) !== String(invitation.teamId)) {
-      await Team.findByIdAndUpdate(currentUser.teamId, {
-        $pull: {
-          members: req.user.id,
-        },
+    if (!currentUser) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
       });
     }
 
+    if (currentUser.teamId) {
+      return res.status(409).json({
+        success: false,
+        message: "This representative already belongs to a team.",
+      });
+    }
+
+    const team = await Team.findById(invitation.teamId);
+
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    if (!team.isActive || team.status !== "active") {
+      return res.status(400).json({
+        success: false,
+        message: "This team is not active",
+      });
+    }
+
+    const manager = await User.findById(invitation.fromManagerId);
+    const path = await buildHierarchy(invitation.fromManagerId);
+
     currentUser.managerId = invitation.fromManagerId;
     currentUser.teamId = invitation.teamId;
+    currentUser.lineId = team.lineId;
+    currentUser.territory = team.territory || currentUser.territory;
+    currentUser.area = team.area || currentUser.area;
     currentUser.path = path;
     currentUser.lastActivityAt = new Date();
     const user = await currentUser.save();
@@ -213,12 +274,30 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
     invitation.acceptedAt = new Date();
     await invitation.save();
 
+    let notification = null;
+    if (manager) {
+      notification = await createAndSendNotification({
+        from: req.user.id,
+        to: manager._id,
+        title: "Team Invitation Accepted",
+        subtitle: `${currentUser.fullName || currentUser.email} accepted your invitation to ${team.teamName}`,
+        routeName: "TeamDetails",
+        payload: {
+          invitationId: String(invitation._id),
+          teamId: String(team._id),
+          userId: String(currentUser._id),
+        },
+        recipient: manager,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       message: "Team invitation accepted successfully",
       data: {
         invitation,
         user,
+        notification,
       },
     });
   } catch (error) {
@@ -228,20 +307,11 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
 
 router.patch("/:id/reject", auth, async (req, res, next) => {
   try {
-    const invitation = await TeamInvitation.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        toUserId: req.user.id,
-        status: "pending",
-      },
-      {
-        $set: {
-          status: "rejected",
-          rejectedAt: new Date(),
-        },
-      },
-      { new: true },
-    );
+    const invitation = await TeamInvitation.findOne({
+      _id: req.params.id,
+      toUserId: req.user.id,
+      status: "pending",
+    });
 
     if (!invitation) {
       return res.status(404).json({
@@ -250,10 +320,40 @@ router.patch("/:id/reject", auth, async (req, res, next) => {
       });
     }
 
+    invitation.status = "rejected";
+    invitation.rejectedAt = new Date();
+    await invitation.save();
+
+    const [currentUser, manager, team] = await Promise.all([
+      User.findById(req.user.id),
+      User.findById(invitation.fromManagerId),
+      Team.findById(invitation.teamId),
+    ]);
+    let notification = null;
+
+    if (manager && currentUser && team) {
+      notification = await createAndSendNotification({
+        from: req.user.id,
+        to: manager._id,
+        title: "Team Invitation Rejected",
+        subtitle: `${currentUser.fullName || currentUser.email} rejected your invitation to ${team.teamName}`,
+        routeName: "TeamDetails",
+        payload: {
+          invitationId: String(invitation._id),
+          teamId: String(team._id),
+          userId: String(currentUser._id),
+        },
+        recipient: manager,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       message: "Team invitation rejected successfully",
-      data: invitation,
+      data: {
+        invitation,
+        notification,
+      },
     });
   } catch (error) {
     return next(error);

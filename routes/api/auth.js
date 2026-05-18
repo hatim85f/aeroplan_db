@@ -1,5 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const defaults = require("../../config/default.json");
 const User = require("../../models/User");
@@ -7,6 +8,7 @@ const { createAppId } = require("../../helpers/appId");
 const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
+const CODE_EXPIRY_MINUTES = 15;
 
 const getJwtSecret = () => {
   return process.env.JWT_SECRET || process.env.jwtSecret || defaults.jwtSecret;
@@ -27,7 +29,60 @@ const createBackendToken = (user) => {
 const sanitizeUser = (user) => {
   const userObject = user.toObject ? user.toObject() : user;
   delete userObject.passwordHash;
+  delete userObject.verificationCodeHash;
+  delete userObject.verificationCodeExpiresAt;
+  delete userObject.verificationCodeSentAt;
+  delete userObject.passwordResetCodeHash;
+  delete userObject.passwordResetCodeExpiresAt;
+  delete userObject.passwordResetCodeSentAt;
   return userObject;
+};
+
+const normalizeEmail = (email) => String(email || "").toLowerCase().trim();
+
+const generateSixDigitCode = () => {
+  return crypto.randomInt(100000, 1000000).toString();
+};
+
+const hashCode = (code) => {
+  return crypto.createHash("sha256").update(String(code)).digest("hex");
+};
+
+const createCodePayload = () => {
+  const code = generateSixDigitCode();
+  const expiresAt = new Date(Date.now() + CODE_EXPIRY_MINUTES * 60 * 1000);
+
+  return {
+    code,
+    codeHash: hashCode(code),
+    expiresAt,
+    sentAt: new Date(),
+  };
+};
+
+const isValidSixDigitCode = (code) => /^\d{6}$/.test(String(code || ""));
+
+const codeMatches = (code, codeHash) => {
+  if (!codeHash) {
+    return false;
+  }
+
+  const submittedHash = hashCode(code);
+  const submitted = Buffer.from(submittedHash, "hex");
+  const expected = Buffer.from(codeHash, "hex");
+
+  return (
+    submitted.length === expected.length &&
+    crypto.timingSafeEqual(submitted, expected)
+  );
+};
+
+const addDevelopmentCode = (response, codeName, code) => {
+  if (process.env.NODE_ENV !== "production" && code) {
+    response[codeName] = code;
+  }
+
+  return response;
 };
 
 const buildHierarchy = async (managerId) => {
@@ -83,7 +138,7 @@ const buildHierarchyByAppId = async (managerAppId, currentUserId) => {
 const findUserProfileById = (userId) => {
   return User.findById(userId)
     .populate("managerId", "fullName email appId role profilePicture position territory area")
-    .populate("teamId", "teamName logo details territory lineId");
+    .populate("teamId", "teamName teamCode teamLogo description territory area lineId lineName");
 };
 
 const formatUserProfile = (user) => {
@@ -146,14 +201,14 @@ router.post("/register", async (req, res, next) => {
       });
     }
 
-    if (password.length < 8) {
+    if (typeof password !== "string" || password.length < 8) {
       return res.status(400).json({
         success: false,
         message: "Password must be at least 8 characters",
       });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
+    const normalizedEmail = normalizeEmail(email);
     const existingUser = await User.findOne({ email: normalizedEmail });
 
     if (existingUser) {
@@ -166,10 +221,14 @@ router.post("/register", async (req, res, next) => {
     const hierarchy = await buildHierarchy(managerId);
     const passwordHash = await bcrypt.hash(password, 10);
     const now = new Date();
+    const verification = createCodePayload();
     const user = await User.create({
       email: normalizedEmail,
       appId: await createUniqueAppId(),
       passwordHash,
+      verificationCodeHash: verification.codeHash,
+      verificationCodeExpiresAt: verification.expiresAt,
+      verificationCodeSentAt: verification.sentAt,
       authProviders: ["password"],
       fullName,
       userName,
@@ -183,9 +242,229 @@ router.post("/register", async (req, res, next) => {
       onlineStatus: "online",
     });
 
-    return res.status(201).json({
+    return res.status(201).json(addDevelopmentCode({
       success: true,
-      message: "User registered successfully",
+      message: "User registered successfully. Verification code sent.",
+      token: createBackendToken(user),
+      tokenType: "Backend JWT",
+      expiresIn: "7d",
+      data: sanitizeUser(user),
+    }, "verificationCode", verification.code));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/verify-account", async (req, res, next) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({
+        success: false,
+        message: "email and code are required",
+      });
+    }
+
+    if (!isValidSixDigitCode(code)) {
+      return res.status(400).json({
+        success: false,
+        message: "code must be 6 digits",
+      });
+    }
+
+    const user = await User.findOne({ email: normalizeEmail(email) }).select(
+      "+verificationCodeHash +verificationCodeExpiresAt",
+    );
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email or verification code",
+      });
+    }
+
+    if (user.emailVerified) {
+      return res.status(200).json({
+        success: true,
+        message: "Account already verified",
+        token: createBackendToken(user),
+        tokenType: "Backend JWT",
+        expiresIn: "7d",
+        data: sanitizeUser(user),
+      });
+    }
+
+    if (
+      !codeMatches(code, user.verificationCodeHash) ||
+      !user.verificationCodeExpiresAt ||
+      user.verificationCodeExpiresAt.getTime() < Date.now()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code",
+      });
+    }
+
+    user.emailVerified = true;
+    user.status = user.status === "pending" ? "active" : user.status;
+    user.verificationCodeHash = undefined;
+    user.verificationCodeExpiresAt = undefined;
+    user.verificationCodeSentAt = undefined;
+    user.lastActivityAt = new Date();
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Account verified successfully",
+      token: createBackendToken(user),
+      tokenType: "Backend JWT",
+      expiresIn: "7d",
+      data: sanitizeUser(user),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/resend-verification-code", async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "email is required",
+      });
+    }
+
+    const user = await User.findOne({ email: normalizeEmail(email) }).select(
+      "+verificationCodeHash +verificationCodeExpiresAt +verificationCodeSentAt",
+    );
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: "If an unverified account exists, a verification code has been sent.",
+      });
+    }
+
+    if (user.emailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "Account already verified",
+      });
+    }
+
+    const verification = createCodePayload();
+    user.verificationCodeHash = verification.codeHash;
+    user.verificationCodeExpiresAt = verification.expiresAt;
+    user.verificationCodeSentAt = verification.sentAt;
+    await user.save();
+
+    return res.status(200).json(addDevelopmentCode({
+      success: true,
+      message: "Verification code sent successfully",
+    }, "verificationCode", verification.code));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/forgot-password", async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "email is required",
+      });
+    }
+
+    const user = await User.findOne({ email: normalizeEmail(email) }).select(
+      "+passwordResetCodeHash +passwordResetCodeExpiresAt +passwordResetCodeSentAt",
+    );
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: "If the email exists, password reset instructions have been sent.",
+      });
+    }
+
+    const reset = createCodePayload();
+    user.passwordResetCodeHash = reset.codeHash;
+    user.passwordResetCodeExpiresAt = reset.expiresAt;
+    user.passwordResetCodeSentAt = reset.sentAt;
+    await user.save();
+
+    return res.status(200).json(addDevelopmentCode({
+      success: true,
+      message: "Password reset instructions sent successfully",
+    }, "resetCode", reset.code));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/reset-password", async (req, res, next) => {
+  try {
+    const { email, code, password } = req.body;
+
+    if (!email || !code || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "email, code and password are required",
+      });
+    }
+
+    if (!isValidSixDigitCode(code)) {
+      return res.status(400).json({
+        success: false,
+        message: "code must be 6 digits",
+      });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters",
+      });
+    }
+
+    const user = await User.findOne({ email: normalizeEmail(email) }).select(
+      "+passwordHash +passwordResetCodeHash +passwordResetCodeExpiresAt",
+    );
+
+    if (
+      !user ||
+      !codeMatches(code, user.passwordResetCodeHash) ||
+      !user.passwordResetCodeExpiresAt ||
+      user.passwordResetCodeExpiresAt.getTime() < Date.now()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired reset code",
+      });
+    }
+
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.passwordResetCodeHash = undefined;
+    user.passwordResetCodeExpiresAt = undefined;
+    user.passwordResetCodeSentAt = undefined;
+    if (!Array.isArray(user.authProviders)) {
+      user.authProviders = [];
+    }
+    if (!user.authProviders.includes("password")) {
+      user.authProviders.push("password");
+    }
+    user.lastActivityAt = new Date();
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset successfully",
       token: createBackendToken(user),
       tokenType: "Backend JWT",
       expiresIn: "7d",
@@ -208,7 +487,7 @@ router.post("/login", async (req, res, next) => {
       });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
+    const normalizedEmail = normalizeEmail(email);
     const user = await User.findOne({ email: normalizedEmail }).select(
       "+passwordHash",
     );
@@ -234,6 +513,9 @@ router.post("/login", async (req, res, next) => {
     user.onlineStatus = "online";
     if (!user.appId) {
       user.appId = await createUniqueAppId();
+    }
+    if (!Array.isArray(user.authProviders)) {
+      user.authProviders = [];
     }
     if (!user.authProviders.includes("password")) {
       user.authProviders.push("password");

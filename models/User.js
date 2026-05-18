@@ -89,6 +89,18 @@ const userSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    verificationCodeHash: {
+      type: String,
+      select: false,
+    },
+    verificationCodeExpiresAt: {
+      type: Date,
+      select: false,
+    },
+    verificationCodeSentAt: {
+      type: Date,
+      select: false,
+    },
     authProviders: [
       {
         type: String,
@@ -97,6 +109,18 @@ const userSchema = new Schema(
     ],
     passwordHash: {
       type: String,
+      select: false,
+    },
+    passwordResetCodeHash: {
+      type: String,
+      select: false,
+    },
+    passwordResetCodeExpiresAt: {
+      type: Date,
+      select: false,
+    },
+    passwordResetCodeSentAt: {
+      type: Date,
       select: false,
     },
 

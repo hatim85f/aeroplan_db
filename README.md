@@ -24,11 +24,14 @@ JWT_SECRET=
 ## Auth Flow
 
 1. Register with `POST /api/auth/register`.
-2. Login with `POST /api/auth/login`.
-3. Use the returned token as `Authorization: Bearer <token>`.
-4. Call `GET /api/auth/me`.
+2. Verify the signup code with `POST /auth/verify-account` or `POST /api/auth/verify-account`.
+3. Login with `POST /api/auth/login`.
+4. Use the returned token as `Authorization: Bearer <token>`.
+5. Call `GET /api/auth/me`.
 
 The returned token is a backend JWT and expires in 7 days.
+
+Auth routes are available under both `/api/auth` and `/auth`.
 
 Managers and senior managers are represented with:
 
@@ -105,7 +108,116 @@ Success:
 }
 ```
 
+In non-production environments, registration responses include `verificationCode` so the mobile app can be tested before an email provider is connected. In production, only the hashed expiring code is stored.
+
 `managerAppId` is optional. If provided, it must be the manager user's shareable `appId` such as `AP-123456`. The backend resolves it, updates `managerId`, and rebuilds the hierarchy `path`. The response returns populated `managerId` details.
+
+### POST /auth/verify-account
+
+Verifies the 6-digit code after signup. Also available at `POST /api/auth/verify-account`.
+
+Body:
+
+```json
+{
+  "email": "rep@company.com",
+  "code": "123456"
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Account verified successfully",
+  "token": "backend-jwt-token",
+  "tokenType": "Backend JWT",
+  "expiresIn": "7d",
+  "data": {
+    "_id": "mongo-user-id",
+    "email": "rep@company.com",
+    "emailVerified": true,
+    "status": "active"
+  }
+}
+```
+
+### POST /auth/resend-verification-code
+
+Resends the signup verification code. Also available at `POST /api/auth/resend-verification-code`.
+
+Body:
+
+```json
+{
+  "email": "rep@company.com"
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Verification code sent successfully"
+}
+```
+
+In non-production environments, the response includes `verificationCode`.
+
+### POST /auth/forgot-password
+
+Generates a 6-digit password reset code for the account. Also available at `POST /api/auth/forgot-password`.
+
+Body:
+
+```json
+{
+  "email": "rep@company.com"
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Password reset instructions sent successfully"
+}
+```
+
+If the email does not exist, the API still returns success with a generic message to avoid exposing registered email addresses. In non-production environments, the response includes `resetCode` when the user exists.
+
+### POST /auth/reset-password
+
+Resets the password inside the app using the 6-digit reset code. Also available at `POST /api/auth/reset-password`.
+
+Body:
+
+```json
+{
+  "email": "rep@company.com",
+  "code": "123456",
+  "password": "NewStrongPass123"
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Password reset successfully",
+  "token": "backend-jwt-token",
+  "tokenType": "Backend JWT",
+  "expiresIn": "7d",
+  "data": {
+    "_id": "mongo-user-id",
+    "email": "rep@company.com"
+  }
+}
+```
 
 ### POST /api/auth/login
 
@@ -290,7 +402,7 @@ Body for one recipient:
 
 ### POST /api/teams
 
-Creates a team for the logged-in manager.
+Creates a team for the logged-in manager. The manager becomes `managerId` and `createdBy`. Use `lineId` from `/api/lines`; `lineName` is kept for display.
 
 Headers:
 
@@ -303,16 +415,69 @@ Body:
 ```json
 {
   "teamName": "Dubai Team A",
-  "logo": "https://example.com/logo.png",
-  "details": "Primary cardiology team",
-  "lineId": "cardio",
-  "territory": "Dubai"
+  "teamLogo": "https://example.com/logo.png",
+  "description": "Primary cardiology team",
+  "lineId": "CARDIO",
+  "lineName": "Cardiology",
+  "territory": "Dubai",
+  "area": "Dubai Marina",
+  "visibility": "private"
+}
+```
+
+Legacy `logo` and `details` are still accepted and mapped to `teamLogo` and `description`.
+
+### GET /api/lines
+
+Returns lines for the team creation dropdown.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### POST /api/lines
+
+Manager creates a new line when it is not already in the dropdown.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Body:
+
+```json
+{
+  "lineId": "CARDIO",
+  "lineName": "Cardiology",
+  "description": "Cardiology product line"
 }
 ```
 
 ### GET /api/teams/my-teams
 
-Returns teams owned by the logged-in manager, or teams where the logged-in representative is a member.
+Returns teams owned by the logged-in manager, or teams where the logged-in representative is a member. Supports dashboard filters.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Query examples:
+
+```text
+GET /api/teams/my-teams?lineId=CARDIO
+GET /api/teams/my-teams?territory=Dubai&status=active
+GET /api/teams/my-teams?visibility=private&isActive=true
+```
+
+### GET /api/teams/dashboard
+
+Returns filtered team dashboard data and totals for owned/member teams.
 
 Headers:
 
@@ -322,7 +487,7 @@ Authorization: Bearer <token>
 
 ### GET /api/teams/:id
 
-Returns one team if the logged-in user is the manager or a member.
+Returns one team if the logged-in user is the manager or a member. Includes pending invitations and permission flags.
 
 Headers:
 
@@ -330,9 +495,43 @@ Headers:
 Authorization: Bearer <token>
 ```
 
+### PATCH /api/teams/:id
+
+Manager updates one of their own teams.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### GET /api/teams/:id/members
+
+Returns accepted members only.
+
+### GET /api/teams/:id/invitations
+
+Manager returns invitations for one owned team. Use `?status=pending` to filter.
+
+### GET /api/teams/:id/hierarchy
+
+Returns manager, members, and hierarchy path data.
+
+### GET /api/teams/:id/targets
+
+Returns member target fields for the team.
+
+### GET /api/teams/:id/reports
+
+Returns member performance and forecast snapshots for reports.
+
+### GET /api/teams/:id/permissions
+
+Returns UI permission flags such as `canManage`, `canInvite`, `canViewReports`, and `canViewTargets`.
+
 ### POST /api/team-invitations
 
-Manager sends a team invitation to a user by `appId`. The backend creates the invitation and sends a notification to the invited user with `routeName: "TeamInvitations"`.
+Manager sends a team invitation to a representative by `appId`. The backend checks the appId exists, the user is a representative, the rep does not already belong to any team, the rep is not already in the team, no pending invitation exists, and the manager owns the team. If valid, it creates `TeamInvitation status=pending` and sends a notification to the rep with `routeName: "TeamInvitations"`.
 
 Headers:
 
@@ -360,7 +559,7 @@ Optional:
 
 ### GET /api/team-invitations
 
-Returns team invitations for the logged-in user.
+Returns team invitations for the logged-in user. Reps use the default received box; managers can use `box=sent`.
 
 Headers:
 
@@ -379,7 +578,7 @@ GET /api/team-invitations?box=sent&status=pending
 
 ### PATCH /api/team-invitations/:id/accept
 
-Accepts a pending invitation. The backend links the user to the selected team, sets `managerId`, rebuilds `path`, and adds the user to the team members list.
+Accepts a pending invitation. Only now does the backend set `rep.teamId`, `rep.managerId`, `rep.lineId`, rebuild `path`, add the rep to `team.members`, set invitation status to `accepted`, and notify the manager. If the rep already has a `teamId`, acceptance is blocked.
 
 Headers:
 
@@ -389,7 +588,7 @@ Authorization: Bearer <token>
 
 ### PATCH /api/team-invitations/:id/reject
 
-Rejects a pending invitation.
+Rejects a pending invitation. The backend does not update `teamId`, `managerId`, or `team.members`; it only sets invitation status to `rejected` and notifies the manager.
 
 Headers:
 
