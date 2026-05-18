@@ -66,7 +66,7 @@ const findTeamForUser = async (teamId, user) => {
     .populate("createdBy", "fullName email appId role")
     .populate(
       "members",
-      "fullName email appId role status teamId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot",
+      "fullName userName email phone appId role status teamId managerId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot",
     );
 
   if (!team) {
@@ -136,6 +136,28 @@ const buildTeamPermissions = (user, team) => {
     canArchive: canManage,
     canViewReports: canManage || String(user.teamId || "") === String(team._id),
     canViewTargets: canManage || String(user.teamId || "") === String(team._id),
+  };
+};
+
+const formatTeamMember = (member, team) => {
+  const memberObject = member.toObject ? member.toObject() : member;
+
+  return {
+    _id: memberObject._id,
+    fullName: memberObject.fullName,
+    userName: memberObject.userName,
+    appId: memberObject.appId,
+    email: memberObject.email,
+    phone: memberObject.phone,
+    role: memberObject.role,
+    profilePicture: memberObject.profilePicture,
+    territory: memberObject.territory || team.territory,
+    area: memberObject.area || team.area,
+    lineId: memberObject.lineId || team.lineId,
+    lineName: team.lineName,
+    managerId: memberObject.managerId || team.managerId?._id || team.managerId,
+    teamId: memberObject.teamId || team._id,
+    status: memberObject.status,
   };
 };
 
@@ -367,11 +389,13 @@ router.get("/:id/members", auth, async (req, res, next) => {
   try {
     const user = await getCurrentUser(req);
     const team = await findTeamForUser(req.params.id, user);
+    const members = team.members.map((member) => formatTeamMember(member, team));
 
     return res.status(200).json({
       success: true,
       message: "Team members fetched successfully",
-      data: team.members,
+      members,
+      data: members,
     });
   } catch (error) {
     return next(error);

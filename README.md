@@ -548,6 +548,39 @@ Authorization: Bearer <token>
 
 Returns accepted members only.
 
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Team members fetched successfully",
+  "members": [
+    {
+      "_id": "rep-user-id",
+      "fullName": "Ahmed Hassan",
+      "userName": "ahmed.hassan",
+      "appId": "AP-123456",
+      "email": "ahmed@example.com",
+      "phone": "+971...",
+      "role": "representative",
+      "profilePicture": "https://...",
+      "territory": "Dubai",
+      "area": "Dubai Marina",
+      "lineId": "CARDIO",
+      "lineName": "Cardiology",
+      "managerId": "manager-id",
+      "teamId": "team-id",
+      "status": "active"
+    }
+  ],
+  "data": [
+    {
+      "_id": "rep-user-id"
+    }
+  ]
+}
+```
+
 ### GET /api/teams/:id/invitations
 
 Manager returns invitations for one owned team. Use `?status=pending` to filter.
