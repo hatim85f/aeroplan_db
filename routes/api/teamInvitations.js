@@ -9,6 +9,16 @@ const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
 const normalizeLineId = (lineId) => String(lineId || "").trim().toUpperCase();
+const getTeamLineIds = (team) => {
+  const lineIds = Array.isArray(team.lineIds) && team.lineIds.length > 0 ? team.lineIds : [team.lineId];
+  return [...new Set(lineIds.map(normalizeLineId).filter(Boolean))];
+};
+const getTeamLineName = (team, lineId, line) => {
+  const normalizedLineId = normalizeLineId(lineId);
+  const lineIndex = (team.lineIds || []).map(normalizeLineId).indexOf(normalizedLineId);
+
+  return team.lineNames?.[lineIndex] || line?.lineName || team.lineName || normalizedLineId;
+};
 
 const getCurrentUser = async (req) => {
   return User.findById(req.user.id);
@@ -51,7 +61,7 @@ const populateInvitation = (query) => {
   return query
     .populate("fromManagerId", "fullName email appId role profilePicture")
     .populate("toUserId", "fullName email appId role status teamId lineId territory area designation position")
-    .populate("teamId", "teamName teamCode teamLogo description lineId lineName territory area managerId");
+    .populate("teamId", "teamName teamCode teamLogo description lineId lineName lineIds lineNames territory area managerId");
 };
 
 router.post("/", auth, requireManager, async (req, res, next) => {
@@ -75,11 +85,12 @@ router.post("/", auth, requireManager, async (req, res, next) => {
     }
 
     const normalizedLineId = normalizeLineId(lineId);
+    const teamLineIds = getTeamLineIds(team);
 
-    if (normalizeLineId(team.lineId) !== normalizedLineId) {
+    if (!teamLineIds.includes(normalizedLineId)) {
       return res.status(400).json({
         success: false,
-        message: "lineId does not match the selected team",
+        message: "lineId is not assigned to the selected team",
       });
     }
 
@@ -164,7 +175,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       toUserId: invitedUser._id,
       teamId: team._id,
       lineId: normalizedLineId,
-      lineName: team.lineName || line.lineName,
+      lineName: getTeamLineName(team, normalizedLineId, line),
       message,
       expiresAt,
     });
@@ -278,8 +289,18 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
     const manager = await User.findById(invitation.fromManagerId);
     const path = await buildHierarchy(invitation.fromManagerId);
     const acceptedLineId = normalizeLineId(invitation.lineId || team.lineId);
+    const teamLineIds = getTeamLineIds(team);
+
+    if (!teamLineIds.includes(acceptedLineId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invitation line is not assigned to this team",
+      });
+    }
+
+    const line = await Line.findOne({ lineId: acceptedLineId });
     invitation.lineId = acceptedLineId;
-    invitation.lineName = invitation.lineName || team.lineName;
+    invitation.lineName = invitation.lineName || getTeamLineName(team, acceptedLineId, line);
 
     currentUser.managerId = invitation.fromManagerId;
     currentUser.teamId = invitation.teamId;

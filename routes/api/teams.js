@@ -101,13 +101,45 @@ const resolveLine = async (lineId, lineName) => {
   };
 };
 
+const resolveLines = async ({ lineIds, lineNames, lineId, lineName }) => {
+  const requestedLineIds = Array.isArray(lineIds) && lineIds.length > 0 ? lineIds : [lineId];
+  const normalizedLineIds = [...new Set(requestedLineIds.map(normalizeLineId).filter(Boolean))];
+
+  if (normalizedLineIds.length === 0) {
+    const error = new Error("At least one lineId is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const lines = await Line.find({ lineId: { $in: normalizedLineIds } }).lean();
+  const linesById = lines.reduce((map, line) => {
+    map[line.lineId] = line;
+    return map;
+  }, {});
+  const requestLineNames = Array.isArray(lineNames) ? lineNames : [];
+  const resolvedLineNames = normalizedLineIds.map((resolvedLineId, index) => {
+    return linesById[resolvedLineId]?.lineName || requestLineNames[index] || lineName || resolvedLineId;
+  });
+
+  return {
+    primaryLineId: normalizedLineIds[0],
+    primaryLineName: resolvedLineNames[0],
+    lineIds: normalizedLineIds,
+    lineNames: resolvedLineNames,
+  };
+};
+
 const buildTeamQuery = (user, query) => {
   const teamQuery = isManagerRole(user.role)
     ? { managerId: user._id }
     : { members: user._id };
 
   if (query.lineId) {
-    teamQuery.lineId = normalizeLineId(query.lineId);
+    const normalizedLineId = normalizeLineId(query.lineId);
+    teamQuery.$or = [
+      { lineIds: normalizedLineId },
+      { lineId: normalizedLineId },
+    ];
   }
   if (query.territory) {
     teamQuery.territory = query.territory;
@@ -139,8 +171,17 @@ const buildTeamPermissions = (user, team) => {
   };
 };
 
+const getTeamLineName = (team, lineId) => {
+  const normalizedLineId = normalizeLineId(lineId);
+  const normalizedTeamLineIds = (team.lineIds || []).map(normalizeLineId);
+  const lineIndex = normalizedTeamLineIds.indexOf(normalizedLineId);
+
+  return team.lineNames?.[lineIndex] || team.lineName || normalizedLineId;
+};
+
 const formatTeamMember = (member, team) => {
   const memberObject = member.toObject ? member.toObject() : member;
+  const memberLineId = memberObject.lineId || team.lineId;
 
   return {
     _id: memberObject._id,
@@ -153,8 +194,8 @@ const formatTeamMember = (member, team) => {
     profilePicture: memberObject.profilePicture,
     territory: memberObject.territory || team.territory,
     area: memberObject.area || team.area,
-    lineId: memberObject.lineId || team.lineId,
-    lineName: team.lineName,
+    lineId: memberLineId,
+    lineName: getTeamLineName(team, memberLineId),
     managerId: memberObject.managerId || team.managerId?._id || team.managerId,
     teamId: memberObject.teamId || team._id,
     status: memberObject.status,
@@ -172,6 +213,8 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       details,
       lineId,
       lineName,
+      lineIds,
+      lineNames,
       territory,
       area,
       organizationId,
@@ -187,7 +230,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       });
     }
 
-    const line = await resolveLine(lineId, lineName);
+    const lines = await resolveLines({ lineIds, lineNames, lineId, lineName });
     const normalizedTeamCode = teamCode ? String(teamCode).trim().toUpperCase() : await createTeamCode();
 
     const team = await Team.create({
@@ -195,8 +238,10 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       teamCode: normalizedTeamCode,
       teamLogo: teamLogo || logo,
       description: description || details,
-      lineId: line.lineId,
-      lineName: line.lineName,
+      lineId: lines.primaryLineId,
+      lineName: lines.primaryLineName,
+      lineIds: lines.lineIds,
+      lineNames: lines.lineNames,
       territory,
       area,
       managerId: req.user.id,
@@ -337,6 +382,8 @@ router.patch("/:id", auth, requireManager, async (req, res, next) => {
       "description",
       "lineId",
       "lineName",
+      "lineIds",
+      "lineNames",
       "territory",
       "area",
       "organizationId",
@@ -361,10 +408,17 @@ router.patch("/:id", auth, requireManager, async (req, res, next) => {
     if (update.teamCode) {
       update.teamCode = String(update.teamCode).trim().toUpperCase();
     }
-    if (update.lineId) {
-      const line = await resolveLine(update.lineId, update.lineName);
-      update.lineId = line.lineId;
-      update.lineName = line.lineName;
+    if (update.lineIds !== undefined || update.lineId !== undefined) {
+      const lines = await resolveLines({
+        lineIds: update.lineIds,
+        lineNames: update.lineNames,
+        lineId: update.lineId || team.lineId,
+        lineName: update.lineName || team.lineName,
+      });
+      update.lineId = lines.primaryLineId;
+      update.lineName = lines.primaryLineName;
+      update.lineIds = lines.lineIds;
+      update.lineNames = lines.lineNames;
     }
 
     const updatedTeam = await Team.findByIdAndUpdate(
@@ -429,7 +483,7 @@ router.get("/:id/invitations", auth, requireManager, async (req, res, next) => {
     const invitations = await TeamInvitation.find(query)
       .populate("fromManagerId", "fullName email appId role")
       .populate("toUserId", "fullName email appId role status teamId")
-      .populate("teamId", "teamName teamCode teamLogo description lineId lineName territory area")
+      .populate("teamId", "teamName teamCode teamLogo description lineId lineName lineIds lineNames territory area")
       .sort({ createdAt: -1 });
 
     return res.status(200).json({

@@ -42,33 +42,70 @@ const requireManager = async (req, res, next) => {
 };
 
 const buildLineStats = async ({ managerId, isActive }) => {
-  const match = {};
+  const teamMatch = {};
+  const userMatch = {};
 
   if (managerId) {
-    match.managerId = managerId;
+    teamMatch.managerId = managerId;
+    userMatch.managerId = managerId;
   }
   if (isActive !== undefined) {
-    match.isActive = isActive;
+    teamMatch.isActive = isActive;
   }
 
-  const stats = await Team.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: "$lineId",
-        numberOfTeams: { $sum: 1 },
-        numberOfMembers: { $sum: { $size: { $ifNull: ["$members", []] } } },
+  const [teamStats, memberStats] = await Promise.all([
+    Team.aggregate([
+      { $match: teamMatch },
+      {
+        $project: {
+          members: 1,
+          effectiveLineIds: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$lineIds", []] } }, 0] },
+              "$lineIds",
+              ["$lineId"],
+            ],
+          },
+        },
       },
-    },
+      { $unwind: "$effectiveLineIds" },
+      {
+        $group: {
+          _id: "$effectiveLineIds",
+          numberOfTeams: { $sum: 1 },
+        },
+      },
+    ]),
+    User.aggregate([
+      { $match: { ...userMatch, lineId: { $exists: true, $ne: "" } } },
+      {
+        $group: {
+          _id: "$lineId",
+          numberOfMembers: { $sum: 1 },
+        },
+      },
+    ]),
   ]);
 
-  return stats.reduce((map, item) => {
-    map[String(item._id || "").toUpperCase()] = {
+  const statsByLineId = {};
+
+  teamStats.forEach((item) => {
+    const lineId = normalizeLineId(item._id);
+    statsByLineId[lineId] = {
       numberOfTeams: item.numberOfTeams,
+      numberOfMembers: 0,
+    };
+  });
+
+  memberStats.forEach((item) => {
+    const lineId = normalizeLineId(item._id);
+    statsByLineId[lineId] = {
+      numberOfTeams: statsByLineId[lineId]?.numberOfTeams || 0,
       numberOfMembers: item.numberOfMembers,
     };
-    return map;
-  }, {});
+  });
+
+  return statsByLineId;
 };
 
 const formatLineWithStats = (line, statsByLineId) => {

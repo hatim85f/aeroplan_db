@@ -26,7 +26,6 @@ const teamSchema = new Schema(
     },
     lineId: {
       type: String,
-      required: true,
       trim: true,
       index: true,
     },
@@ -34,6 +33,20 @@ const teamSchema = new Schema(
       type: String,
       trim: true,
     },
+    lineIds: [
+      {
+        type: String,
+        trim: true,
+        uppercase: true,
+        index: true,
+      },
+    ],
+    lineNames: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
     territory: {
       type: String,
       trim: true,
