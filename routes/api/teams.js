@@ -78,7 +78,7 @@ const findTeamForUser = async (teamId, user) => {
     .populate("createdBy", "fullName email appId role")
     .populate(
       "members",
-      "fullName userName email phone appId role status teamId managerId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot",
+      "fullName userName email phone appId role status teamId managerId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot joinDate",
     );
 
   if (!team) {
@@ -312,6 +312,7 @@ const formatTeamMember = (member, team) => {
     managerId: memberObject.managerId || team.managerId?._id || team.managerId,
     teamId: memberObject.teamId || team._id,
     status: memberObject.status,
+    joinDate: memberObject.joinDate || null,
   };
 };
 
@@ -371,7 +372,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       .populate("createdBy", "fullName email appId role")
       .populate(
         "members",
-        "fullName userName email phone appId role status teamId managerId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot",
+        "fullName userName email phone appId role status teamId managerId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot joinDate",
       );
 
     return res.status(201).json({
