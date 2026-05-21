@@ -709,6 +709,50 @@ router.get("/:id/permissions", auth, async (req, res, next) => {
   }
 });
 
+router.delete("/:id/members/:userId", auth, requireManager, async (req, res, next) => {
+  try {
+    const team = await Team.findById(req.params.id);
+
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    if (!canManageTeam(req.currentUser, team)) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only manage your own teams",
+      });
+    }
+
+    const isMember = team.members.some((id) => String(id) === req.params.userId);
+
+    if (!isMember) {
+      return res.status(404).json({
+        success: false,
+        message: "User is not a member of this team",
+      });
+    }
+
+    await Promise.all([
+      Team.findByIdAndUpdate(team._id, { $pull: { members: req.params.userId } }),
+      User.findByIdAndUpdate(req.params.userId, {
+        $unset: { teamId: "" },
+        $set: { lastActivityAt: new Date() },
+      }),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Member removed from team successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.delete("/:id", auth, requireManager, async (req, res, next) => {
   try {
     const team = await Team.findById(req.params.id);
