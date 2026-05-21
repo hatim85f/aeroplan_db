@@ -102,7 +102,11 @@ const resolveLine = async (lineId, lineName) => {
 };
 
 const resolveLines = async ({ lineIds, lineNames, lineId, lineName }) => {
-  const requestedLineIds = Array.isArray(lineIds) && lineIds.length > 0 ? lineIds : [lineId];
+  const requestedLineIds = Array.isArray(lineIds) && lineIds.length > 0
+    ? lineIds
+    : Array.isArray(lineId)
+      ? lineId
+      : [lineId];
   const normalizedLineIds = [...new Set(requestedLineIds.map(normalizeLineId).filter(Boolean))];
 
   if (normalizedLineIds.length === 0) {

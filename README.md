@@ -402,7 +402,7 @@ Body for one recipient:
 
 ### POST /api/teams
 
-Creates a supervisor team for the logged-in manager. The manager becomes `managerId` and `createdBy`. Use `lineIds` from `/api/lines` to define which product lines this team can supervise. Legacy `lineId` is still accepted for single-line teams.
+Creates a supervisor team for the logged-in manager. The manager becomes `managerId` and `createdBy`. Use `lineIds` from `/api/lines` to define which product lines this team can supervise. `lineId` can also be sent as an array for frontend compatibility. Legacy string `lineId` is still accepted for single-line teams.
 
 Headers:
 
@@ -417,11 +417,21 @@ Body:
   "teamName": "Dubai Team A",
   "teamLogo": "https://example.com/logo.png",
   "description": "Dubai supervisor team",
-  "lineIds": ["CARDIO", "DIABETES"],
+  "lineId": ["CARDIO", "DIABETES"],
   "lineNames": ["Cardiology", "Diabetes"],
   "territory": "Dubai",
   "area": "Dubai Marina",
   "visibility": "private"
+}
+```
+
+Preferred body also works:
+
+```json
+{
+  "teamName": "Dubai Team A",
+  "lineIds": ["CARDIO", "DIABETES"],
+  "lineNames": ["Cardiology", "Diabetes"]
 }
 ```
 
