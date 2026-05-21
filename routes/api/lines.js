@@ -241,4 +241,142 @@ router.post("/", auth, requireManager, async (req, res, next) => {
   }
 });
 
+router.patch("/:lineId", auth, requireManager, async (req, res, next) => {
+  try {
+    const line = await Line.findOne({ lineId: normalizeLineId(req.params.lineId) });
+
+    if (!line) {
+      return res.status(404).json({
+        success: false,
+        message: "Line not found",
+      });
+    }
+
+    const allowedFields = ["lineName", "description", "isActive"];
+    const update = {};
+
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        update[field] = req.body[field];
+      }
+    });
+
+    if (req.body.lineLogo !== undefined) {
+      update.lineLogo = req.body.lineLogo;
+    }
+    if (req.body.logo !== undefined) {
+      update.lineLogo = req.body.logo;
+    }
+
+    const updatedLine = await Line.findByIdAndUpdate(
+      line._id,
+      { $set: update },
+      { new: true, runValidators: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Line updated successfully",
+      data: updatedLine,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:lineId", auth, requireManager, async (req, res, next) => {
+  try {
+    const normalizedLineId = normalizeLineId(req.params.lineId);
+    const line = await Line.findOne({ lineId: normalizedLineId });
+
+    if (!line) {
+      return res.status(404).json({
+        success: false,
+        message: "Line not found",
+      });
+    }
+
+    const [memberCount, teamCount] = await Promise.all([
+      User.countDocuments({ lineId: normalizedLineId }),
+      Team.countDocuments({
+        $or: [{ lineIds: normalizedLineId }, { lineId: normalizedLineId }],
+      }),
+    ]);
+
+    if (memberCount > 0 || teamCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Cannot delete a line that has active members or teams",
+        data: { memberCount, teamCount },
+      });
+    }
+
+    await Line.findByIdAndDelete(line._id);
+
+    return res.status(200).json({
+      success: true,
+      message: "Line deleted successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/:lineId/members/:userId", auth, requireManager, async (req, res, next) => {
+  try {
+    const normalizedLineId = normalizeLineId(req.params.lineId);
+    const line = await Line.findOne({ lineId: normalizedLineId });
+
+    if (!line) {
+      return res.status(404).json({
+        success: false,
+        message: "Line not found",
+      });
+    }
+
+    const user = await User.findById(req.params.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const isMember = line.members.some((id) => String(id) === String(user._id));
+
+    if (!isMember) {
+      return res.status(404).json({
+        success: false,
+        message: "User is not a member of this line",
+      });
+    }
+
+    const userUpdate = { lineId: null, lastActivityAt: new Date() };
+
+    if (user.teamId) {
+      const team = await Team.findById(user.teamId);
+      const teamLineIds = Array.isArray(team?.lineIds) && team.lineIds.length > 0
+        ? team.lineIds
+        : [team?.lineId];
+
+      if (teamLineIds.map(normalizeLineId).includes(normalizedLineId)) {
+        userUpdate.teamId = null;
+      }
+    }
+
+    await Promise.all([
+      Line.findByIdAndUpdate(line._id, { $pull: { members: user._id } }),
+      User.findByIdAndUpdate(user._id, { $set: userUpdate }),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Member removed from line successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;
