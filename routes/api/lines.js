@@ -201,6 +201,34 @@ router.get("/summary", auth, async (req, res, next) => {
   }
 });
 
+router.get("/:lineId", auth, async (req, res, next) => {
+  try {
+    const line = await Line.findOne({ lineId: normalizeLineId(req.params.lineId) })
+      .populate("members", "fullName appId status profilePicture");
+
+    if (!line) {
+      return res.status(404).json({
+        success: false,
+        message: "Line not found",
+      });
+    }
+
+    const lineObject = line.toObject();
+    lineObject.members = lineObject.members.map((member) => ({
+      ...member,
+      isActive: member.status === "active",
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: "Line fetched successfully",
+      data: lineObject,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.post("/", auth, requireManager, async (req, res, next) => {
   try {
     const { lineName, lineId, lineLogo, logo, description, organizationId } = req.body;
