@@ -707,4 +707,40 @@ router.get("/:id/permissions", auth, async (req, res, next) => {
   }
 });
 
+router.delete("/:id", auth, requireManager, async (req, res, next) => {
+  try {
+    const team = await Team.findById(req.params.id);
+
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    if (!canManageTeam(req.currentUser, team)) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only delete your own teams",
+      });
+    }
+
+    await Promise.all([
+      User.updateMany(
+        { teamId: team._id },
+        { $unset: { teamId: "" }, $set: { lastActivityAt: new Date() } },
+      ),
+      TeamInvitation.deleteMany({ teamId: team._id }),
+      Team.findByIdAndDelete(team._id),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Team deleted successfully",
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;
