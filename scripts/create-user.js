@@ -1,15 +1,9 @@
-const fs = require("fs");
-const log = (msg) => fs.appendFileSync("scripts/create-user-result.json", JSON.stringify(msg) + "\n");
-
-log({ step: "start" });
-
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const defaults = require("../config/default.json");
 const User = require("../models/User");
 
 const mongoURI = process.env.MONGO_URI || process.env.mongoURI || defaults.mongoURI;
-log({ step: "config_loaded", mongoURI: mongoURI ? "found" : "missing" });
 
 const createAppId = () => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -20,11 +14,9 @@ const createAppId = () => {
 
 mongoose.connect(mongoURI)
   .then(async () => {
-    log({ step: "connected" });
-
     const existing = await User.findOne({ email: "mahmoud.hemaly@axantia.com" });
     if (existing) {
-      log({ status: "already_exists", _id: String(existing._id), appId: existing.appId });
+      console.log("ALREADY_EXISTS", existing._id.toString(), existing.appId);
       await mongoose.disconnect();
       return;
     }
@@ -56,10 +48,10 @@ mongoose.connect(mongoURI)
       onlineStatus: "offline",
     });
 
-    log({ status: "created", _id: String(user._id), appId: user.appId, email: user.email });
+    console.log("CREATED", user._id.toString(), user.appId, user.email);
     await mongoose.disconnect();
   })
   .catch((err) => {
-    log({ status: "error", message: err.message });
+    console.error("ERROR", err.message);
     process.exit(1);
   });
