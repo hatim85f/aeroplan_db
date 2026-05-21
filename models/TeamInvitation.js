@@ -22,6 +22,17 @@ const teamInvitationSchema = new Schema(
       required: true,
       index: true,
     },
+    lineId: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+      index: true,
+    },
+    lineName: {
+      type: String,
+      trim: true,
+    },
     status: {
       type: String,
       enum: ["pending", "accepted", "rejected", "cancelled"],

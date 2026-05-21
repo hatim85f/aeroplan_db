@@ -603,7 +603,7 @@ Returns UI permission flags such as `canManage`, `canInvite`, `canViewReports`, 
 
 ### POST /api/team-invitations
 
-Manager sends a team invitation to a representative by `appId`. The backend checks the appId exists, the user is a representative, the rep does not already belong to any team, the rep is not already in the team, no pending invitation exists, and the manager owns the team. If valid, it creates `TeamInvitation status=pending` and sends a notification to the rep with `routeName: "TeamInvitations"`.
+Manager sends a team invitation to a representative by `appId`. Send both `teamId` and that team's `lineId`; the backend verifies they match before creating the invitation. The backend checks the appId exists, the user is a representative, the rep does not already belong to any team, the rep is not already in the team, no pending invitation exists, and the manager owns the team. If valid, it creates `TeamInvitation status=pending` with `teamId`, `lineId`, and `lineName`, then sends a notification to the rep with `routeName: "TeamInvitations"`.
 
 Headers:
 
@@ -617,6 +617,7 @@ Body:
 {
   "appId": "AP-123456",
   "teamId": "team-id",
+  "lineId": "CARDIO",
   "message": "Please join Dubai Team A"
 }
 ```
@@ -650,7 +651,7 @@ GET /api/team-invitations?box=sent&status=pending
 
 ### PATCH /api/team-invitations/:id/accept
 
-Accepts a pending invitation. Only now does the backend set `rep.teamId`, `rep.managerId`, `rep.lineId`, rebuild `path`, add the rep to `team.members`, set invitation status to `accepted`, and notify the manager. If the rep already has a `teamId`, acceptance is blocked.
+Accepts a pending invitation. Only now does the backend set `rep.teamId`, `rep.managerId`, `rep.lineId`, rebuild `path`, add the rep to `team.members`, add the rep to `line.members`, set invitation status to `accepted`, and notify the manager. If the rep already has a `teamId`, acceptance is blocked.
 
 Headers:
 

@@ -46,6 +46,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/auth', authRoutes);
+app.use('/', authRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/teams', teamRoutes);
 app.use('/api/team-invitations', teamInvitationRoutes);

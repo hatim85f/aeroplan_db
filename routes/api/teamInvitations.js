@@ -3,10 +3,12 @@ const auth = require("../../middleware/auth");
 const Team = require("../../models/Team");
 const TeamInvitation = require("../../models/TeamInvitation");
 const User = require("../../models/User");
+const Line = require("../../models/Line");
 const { createAndSendNotification } = require("../../helpers/notificationDispatcher");
 const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
+const normalizeLineId = (lineId) => String(lineId || "").trim().toUpperCase();
 
 const getCurrentUser = async (req) => {
   return User.findById(req.user.id);
@@ -54,12 +56,12 @@ const populateInvitation = (query) => {
 
 router.post("/", auth, requireManager, async (req, res, next) => {
   try {
-    const { appId, teamId, message, expiresAt } = req.body;
+    const { appId, teamId, lineId, message, expiresAt } = req.body;
 
-    if (!appId || !teamId) {
+    if (!appId || !teamId || !lineId) {
       return res.status(400).json({
         success: false,
-        message: "appId and teamId are required",
+        message: "appId, teamId and lineId are required",
       });
     }
 
@@ -69,6 +71,24 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message: "Team not found",
+      });
+    }
+
+    const normalizedLineId = normalizeLineId(lineId);
+
+    if (normalizeLineId(team.lineId) !== normalizedLineId) {
+      return res.status(400).json({
+        success: false,
+        message: "lineId does not match the selected team",
+      });
+    }
+
+    const line = await Line.findOne({ lineId: normalizedLineId });
+
+    if (!line) {
+      return res.status(404).json({
+        success: false,
+        message: "Line not found",
       });
     }
 
@@ -143,6 +163,8 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       fromManagerId: req.user.id,
       toUserId: invitedUser._id,
       teamId: team._id,
+      lineId: normalizedLineId,
+      lineName: team.lineName || line.lineName,
       message,
       expiresAt,
     });
@@ -156,6 +178,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       payload: {
         invitationId: String(invitation._id),
         teamId: String(team._id),
+        lineId: normalizedLineId,
       },
       recipient: invitedUser,
     });
@@ -254,10 +277,13 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
 
     const manager = await User.findById(invitation.fromManagerId);
     const path = await buildHierarchy(invitation.fromManagerId);
+    const acceptedLineId = normalizeLineId(invitation.lineId || team.lineId);
+    invitation.lineId = acceptedLineId;
+    invitation.lineName = invitation.lineName || team.lineName;
 
     currentUser.managerId = invitation.fromManagerId;
     currentUser.teamId = invitation.teamId;
-    currentUser.lineId = team.lineId;
+    currentUser.lineId = acceptedLineId;
     currentUser.territory = team.territory || currentUser.territory;
     currentUser.area = team.area || currentUser.area;
     currentUser.path = path;
@@ -269,6 +295,14 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
         members: req.user.id,
       },
     });
+    await Line.findOneAndUpdate(
+      { lineId: acceptedLineId },
+      {
+        $addToSet: {
+          members: req.user.id,
+        },
+      },
+    );
 
     invitation.status = "accepted";
     invitation.acceptedAt = new Date();
@@ -285,6 +319,7 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
         payload: {
           invitationId: String(invitation._id),
           teamId: String(team._id),
+          lineId: acceptedLineId,
           userId: String(currentUser._id),
         },
         recipient: manager,

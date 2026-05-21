@@ -12,7 +12,9 @@ const errorHandler = (error, req, res, next) => {
   if (error.code === 11000) {
     statusCode = 409;
     const fields = Object.keys(error.keyValue || {});
-    message = `${fields.join(', ') || 'Field'} already exists`;
+    message = fields.includes('email')
+      ? 'Email already exists'
+      : `${fields.join(', ') || 'Field'} already exists`;
   }
 
   res.status(statusCode).json({

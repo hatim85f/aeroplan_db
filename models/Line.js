@@ -34,6 +34,12 @@ const lineSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "User",
     },
+    members: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     isActive: {
       type: Boolean,
       default: true,
