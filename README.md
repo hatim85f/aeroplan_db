@@ -624,7 +624,7 @@ Returns UI permission flags such as `canManage`, `canInvite`, `canViewReports`, 
 
 ### POST /api/team-invitations
 
-Manager sends a team invitation to a representative by `appId`. Send `teamId` and the representative's assigned `lineId`. The backend verifies that `lineId` is one of the selected team's `lineIds` before creating the invitation. The backend checks the appId exists, the user is a representative, the rep does not already belong to any team, the rep is not already in the team, no pending invitation exists, and the manager owns the team. If valid, it creates `TeamInvitation status=pending` with `teamId`, `lineId`, and `lineName`, then sends a notification to the rep with `routeName: "TeamInvitations"`.
+Manager sends a line invitation to a representative by `appId`. Send the representative's assigned `lineId`; no `teamId` is needed. The backend checks the appId exists, the line exists, the user is a representative, the rep is not already assigned to that line, and no pending invitation exists. If valid, it creates `TeamInvitation status=pending` with `lineId` and `lineName`, then sends a notification to the rep with `routeName: "TeamInvitations"`. Team membership is handled later when a manager creates or updates a team with matching `lineIds`.
 
 Headers:
 
@@ -637,9 +637,8 @@ Body:
 ```json
 {
   "appId": "AP-123456",
-  "teamId": "team-id",
   "lineId": "CARDIO",
-  "message": "Please join Dubai Team A"
+  "message": "Please join the Cardiology line"
 }
 ```
 
@@ -653,7 +652,7 @@ Optional:
 
 ### GET /api/team-invitations
 
-Returns team invitations for the logged-in user. Reps use the default received box; managers can use `box=sent`.
+Returns line invitations for the logged-in user. Reps use the default received box; managers can use `box=sent`.
 
 Headers:
 
@@ -672,7 +671,7 @@ GET /api/team-invitations?box=sent&status=pending
 
 ### PATCH /api/team-invitations/:id/accept
 
-Accepts a pending invitation. Only now does the backend set `rep.teamId`, `rep.managerId`, `rep.lineId`, rebuild `path`, add the rep to `team.members`, add the rep to `line.members`, set invitation status to `accepted`, and notify the manager. The rep's `lineId` comes from the invitation and must be one of the team's `lineIds`. If the rep already has a `teamId`, acceptance is blocked.
+Accepts a pending line invitation. The backend sets `rep.lineId`, adds the rep to `line.members`, marks the invitation as accepted, and notifies the manager. It does not set `teamId`, `managerId`, or hierarchy `path`; those are wired later when a manager creates or updates a team with matching `lineIds`.
 
 Headers:
 
@@ -682,7 +681,7 @@ Authorization: Bearer <token>
 
 ### PATCH /api/team-invitations/:id/reject
 
-Rejects a pending invitation. The backend does not update `teamId`, `managerId`, or `team.members`; it only sets invitation status to `rejected` and notifies the manager.
+Rejects a pending line invitation. The backend does not update `lineId` or team membership; it only sets invitation status to `rejected` and notifies the manager.
 
 Headers:
 

@@ -19,7 +19,6 @@ const teamInvitationSchema = new Schema(
     teamId: {
       type: Schema.Types.ObjectId,
       ref: "Team",
-      required: true,
       index: true,
     },
     lineId: {
