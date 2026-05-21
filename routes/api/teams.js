@@ -425,10 +425,12 @@ router.get("/dashboard", auth, async (req, res, next) => {
       });
     }
 
-    const teams = await Team.find(buildTeamQuery(user, req.query)).populate(
-      "members",
-      "fullName email appId role status yearlyTargetValue yearlyTargetUnits performanceSnapshot forecastSnapshot",
-    );
+    const teams = await Team.find(buildTeamQuery(user, req.query))
+      .populate("managerId", "fullName email appId role profilePicture")
+      .populate(
+        "members",
+        "fullName email appId role status yearlyTargetValue yearlyTargetUnits performanceSnapshot forecastSnapshot",
+      );
     const memberIds = teams.flatMap((team) => team.members.map((member) => member._id));
     const pendingInvitations = await TeamInvitation.countDocuments({
       teamId: { $in: teams.map((team) => team._id) },
