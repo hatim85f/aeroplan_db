@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const defaults = require("../../config/default.json");
 const User = require("../../models/User");
+const Team = require("../../models/Team");
 const { createAppId } = require("../../helpers/appId");
 const { isManagerRole } = require("../../helpers/roles");
 
@@ -141,12 +142,23 @@ const findUserProfileById = (userId) => {
     .populate("teamId", "teamName teamCode teamLogo description territory area lineId lineName");
 };
 
-const formatUserProfile = (user) => {
+const buildUserProfile = async (user) => {
   const profile = sanitizeUser(user);
   const manager = profile.managerId;
 
   profile.managerName = manager ? manager.fullName || manager.email || "" : null;
   delete profile.managerId;
+
+  if (isManagerRole(profile.role)) {
+    delete profile.teamId;
+    profile.teamName = null;
+    profile.teamsCount = await Team.countDocuments({ managerId: profile._id });
+  } else {
+    const team = profile.teamId;
+    profile.teamName = team ? team.teamName || "" : null;
+    delete profile.teamId;
+    profile.teamsCount = team ? 1 : 0;
+  }
 
   return profile;
 };
@@ -565,7 +577,7 @@ router.get("/me", backendAuth, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "User profile fetched successfully",
-      data: formatUserProfile(user),
+      data: await buildUserProfile(user),
     });
   } catch (error) {
     return next(error);
@@ -631,7 +643,7 @@ router.patch("/me/profile", backendAuth, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "User profile updated successfully",
-      data: formatUserProfile(user),
+      data: await buildUserProfile(user),
     });
   } catch (error) {
     return next(error);

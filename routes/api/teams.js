@@ -366,11 +366,18 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       visibility,
     });
     const syncResult = await syncTeamMembersFromLines(createdTeam);
+    const populatedTeam = await Team.findById(createdTeam._id)
+      .populate("managerId", "fullName email appId role profilePicture position territory area")
+      .populate("createdBy", "fullName email appId role")
+      .populate(
+        "members",
+        "fullName userName email phone appId role status teamId managerId lineId territory area designation position profilePicture yearlyTargetValue yearlyTargetUnits targetYear performanceSnapshot forecastSnapshot",
+      );
 
     return res.status(201).json({
       success: true,
       message: "Team created successfully",
-      data: syncResult.team,
+      data: populatedTeam,
       meta: {
         autoAddedMembers: syncResult.autoAddedMembers,
         skippedAssignedMembers: syncResult.skippedAssignedMembers,
