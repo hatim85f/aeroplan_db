@@ -27,6 +27,18 @@ const getCurrentUser = async (req) => {
   return User.findById(req.user.id);
 };
 
+const buildManagerPath = async (managerId) => {
+  const manager = await User.findById(managerId);
+
+  if (!manager) {
+    const error = new Error("Manager not found");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return [...(manager.path || []), manager._id];
+};
+
 const requireManager = async (req, res, next) => {
   const user = await getCurrentUser(req);
 
@@ -130,6 +142,103 @@ const resolveLines = async ({ lineIds, lineNames, lineId, lineName }) => {
     primaryLineName: resolvedLineNames[0],
     lineIds: normalizedLineIds,
     lineNames: resolvedLineNames,
+  };
+};
+
+const getEffectiveTeamLineIds = (team) => {
+  const lineIds = Array.isArray(team.lineIds) && team.lineIds.length > 0 ? team.lineIds : [team.lineId];
+
+  return [...new Set(lineIds.map(normalizeLineId).filter(Boolean))];
+};
+
+const syncTeamMembersFromLines = async (team) => {
+  const lineIds = getEffectiveTeamLineIds(team);
+
+  if (lineIds.length === 0) {
+    return {
+      team,
+      autoAddedMembers: 0,
+      skippedAssignedMembers: 0,
+    };
+  }
+
+  const managerId = team.managerId?._id || team.managerId;
+  const managerPath = await buildManagerPath(managerId);
+  const eligibleUsers = await User.find({
+    role: "representative",
+    lineId: { $in: lineIds },
+    $or: [
+      { teamId: { $exists: false } },
+      { teamId: null },
+      { teamId: team._id },
+    ],
+  }).select("_id lineId");
+  const userIds = eligibleUsers.map((user) => user._id);
+  const assignedToOtherTeamCount = await User.countDocuments({
+    role: "representative",
+    lineId: { $in: lineIds },
+    teamId: { $exists: true, $nin: [null, team._id] },
+  });
+
+  if (userIds.length === 0) {
+    return {
+      team,
+      autoAddedMembers: 0,
+      skippedAssignedMembers: assignedToOtherTeamCount,
+    };
+  }
+
+  await User.updateMany(
+    { _id: { $in: userIds } },
+    {
+      $set: {
+        teamId: team._id,
+        managerId,
+        path: managerPath,
+        lastActivityAt: new Date(),
+      },
+    },
+  );
+
+  await Team.findByIdAndUpdate(team._id, {
+    $addToSet: {
+      members: {
+        $each: userIds,
+      },
+    },
+  });
+
+  const usersByLine = eligibleUsers.reduce((map, user) => {
+    const normalizedLineId = normalizeLineId(user.lineId);
+    map[normalizedLineId] = map[normalizedLineId] || [];
+    map[normalizedLineId].push(user._id);
+    return map;
+  }, {});
+  const lineBulkOps = Object.entries(usersByLine).map(([normalizedLineId, members]) => ({
+    updateOne: {
+      filter: { lineId: normalizedLineId },
+      update: {
+        $addToSet: {
+          members: {
+            $each: members,
+          },
+        },
+      },
+    },
+  }));
+
+  if (lineBulkOps.length > 0) {
+    await Line.bulkWrite(lineBulkOps);
+  }
+
+  const syncedTeam = await Team.findById(team._id)
+    .populate("managerId", "fullName email appId role")
+    .populate("members", "fullName email appId role status lineId");
+
+  return {
+    team: syncedTeam,
+    autoAddedMembers: userIds.length,
+    skippedAssignedMembers: assignedToOtherTeamCount,
   };
 };
 
@@ -237,7 +346,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
     const lines = await resolveLines({ lineIds, lineNames, lineId, lineName });
     const normalizedTeamCode = teamCode ? String(teamCode).trim().toUpperCase() : await createTeamCode();
 
-    const team = await Team.create({
+    const createdTeam = await Team.create({
       teamName,
       teamCode: normalizedTeamCode,
       teamLogo: teamLogo || logo,
@@ -256,11 +365,16 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       isActive,
       visibility,
     });
+    const syncResult = await syncTeamMembersFromLines(createdTeam);
 
     return res.status(201).json({
       success: true,
       message: "Team created successfully",
-      data: team,
+      data: syncResult.team,
+      meta: {
+        autoAddedMembers: syncResult.autoAddedMembers,
+        skippedAssignedMembers: syncResult.skippedAssignedMembers,
+      },
     });
   } catch (error) {
     return next(error);
@@ -432,11 +546,16 @@ router.patch("/:id", auth, requireManager, async (req, res, next) => {
     )
       .populate("managerId", "fullName email appId role")
       .populate("members", "fullName email appId role status");
+    const syncResult = await syncTeamMembersFromLines(updatedTeam);
 
     return res.status(200).json({
       success: true,
       message: "Team updated successfully",
-      data: updatedTeam,
+      data: syncResult.team,
+      meta: {
+        autoAddedMembers: syncResult.autoAddedMembers,
+        skippedAssignedMembers: syncResult.skippedAssignedMembers,
+      },
     });
   } catch (error) {
     return next(error);

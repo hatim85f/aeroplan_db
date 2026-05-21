@@ -402,7 +402,7 @@ Body for one recipient:
 
 ### POST /api/teams
 
-Creates a supervisor team for the logged-in manager. The manager becomes `managerId` and `createdBy`. Use `lineIds` from `/api/lines` to define which product lines this team can supervise. `lineId` can also be sent as an array for frontend compatibility. Legacy string `lineId` is still accepted for single-line teams.
+Creates a supervisor team for the logged-in manager. The manager becomes `managerId` and `createdBy`. Use `lineIds` from `/api/lines` to define which product lines this team can supervise. `lineId` can also be sent as an array for frontend compatibility. Legacy string `lineId` is still accepted for single-line teams. When lines are added to a team, the backend automatically adds eligible representatives whose `user.lineId` is in those lines to `team.members`, sets their `teamId`, `managerId`, and hierarchy `path`, and adds them to `line.members`. Representatives already assigned to another team are skipped.
 
 Headers:
 
@@ -436,6 +436,17 @@ Preferred body also works:
 ```
 
 Legacy `logo` and `details` are still accepted and mapped to `teamLogo` and `description`.
+
+Success responses include sync metadata:
+
+```json
+{
+  "meta": {
+    "autoAddedMembers": 12,
+    "skippedAssignedMembers": 2
+  }
+}
+```
 
 ### GET /api/lines
 
@@ -546,7 +557,7 @@ Authorization: Bearer <token>
 
 ### PATCH /api/teams/:id
 
-Manager updates one of their own teams.
+Manager updates one of their own teams. Updating `lineIds` or array `lineId` also syncs eligible representatives under those lines into the team.
 
 Headers:
 
