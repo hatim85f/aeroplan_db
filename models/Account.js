@@ -47,6 +47,32 @@ const accountSchema = new Schema(
       type: String,
       trim: true,
     },
+    accountNameKey: {
+      type: String,
+      trim: true,
+      index: true,
+      select: false,
+    },
+    phoneNumberKey: {
+      type: String,
+      trim: true,
+      index: true,
+      select: false,
+    },
+    googleMapsLinkKey: {
+      type: String,
+      trim: true,
+      index: true,
+      unique: true,
+      sparse: true,
+      select: false,
+    },
+    addressKey: {
+      type: String,
+      trim: true,
+      index: true,
+      select: false,
+    },
     location: {
       type: locationSchema,
       default: () => ({}),
@@ -76,5 +102,7 @@ accountSchema.index({
   phoneNumber: "text",
   "location.address": "text",
 });
+accountSchema.index({ accountNameKey: 1, phoneNumberKey: 1 }, { sparse: true });
+accountSchema.index({ accountNameKey: 1, addressKey: 1 }, { sparse: true });
 
 module.exports = mongoose.model("Account", accountSchema);

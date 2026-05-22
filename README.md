@@ -362,6 +362,23 @@ Body:
 
 `location.googleMapsLink` is the preferred map field. Existing coordinate data is still stored if sent, but frontend account forms should use a Google Maps link instead of latitude and longitude inputs.
 
+Duplicate account protection:
+
+The API rejects duplicates with `409 Conflict`. It checks exact normalized `location.googleMapsLink` first, then falls back to `accountName + phoneNumber`, then `accountName + address`.
+
+```json
+{
+  "success": false,
+  "message": "Account already exists",
+  "data": {
+    "duplicateAccountId": "existing-account-id",
+    "matchedOn": "googleMapsLink"
+  }
+}
+```
+
+Possible `matchedOn` values are `googleMapsLink`, `accountNamePhoneNumber`, and `accountNameAddress`.
+
 ### GET /api/accounts
 
 Lists accounts with pagination. Protected by the backend JWT.

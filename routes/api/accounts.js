@@ -7,6 +7,27 @@ const router = express.Router();
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
+const normalizeTextKey = (value) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/\s+/g, " ");
+
+const normalizePhoneKey = (value) => String(value || "").replace(/[^\d+]/g, "");
+
+const normalizeGoogleMapsLinkKey = (value) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/\/+$/, "");
+
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const exactTextRegex = (value) => new RegExp(`^${escapeRegex(String(value || "").trim())}$`, "i");
+
+const exactMapLinkRegex = (value) => new RegExp(
+  `^${escapeRegex(String(value || "").trim().replace(/\/+$/, ""))}/?$`,
+  "i",
+);
+
 const normalizeAssignedRepIds = (body) => {
   if (body.assignedMedicalRepIds !== undefined) {
     return Array.isArray(body.assignedMedicalRepIds)
@@ -63,6 +84,22 @@ const normalizeAccountPayload = (body) => {
     update.lastPlannedVisit = body.lastPlannedVisit || {};
   }
 
+  if (update.accountName !== undefined) {
+    update.accountNameKey = normalizeTextKey(update.accountName);
+  }
+  if (update.phoneNumber !== undefined) {
+    const phoneNumberKey = normalizePhoneKey(update.phoneNumber);
+    update.phoneNumberKey = phoneNumberKey || undefined;
+  }
+  if (update.location?.googleMapsLink !== undefined) {
+    const googleMapsLinkKey = normalizeGoogleMapsLinkKey(update.location.googleMapsLink);
+    update.googleMapsLinkKey = googleMapsLinkKey || undefined;
+  }
+  if (update.location?.address !== undefined) {
+    const addressKey = normalizeTextKey(update.location.address);
+    update.addressKey = addressKey || undefined;
+  }
+
   return update;
 };
 
@@ -78,6 +115,94 @@ const populateAccount = (query) => query.populate(
   "assignedMedicalRepIds",
   "fullName email phone appId role status territory area lineId",
 );
+
+const buildDuplicateAccountQuery = (payload) => {
+  const checks = [];
+
+  if (payload.googleMapsLinkKey) {
+    checks.push({
+      query: {
+        $or: [
+          { googleMapsLinkKey: payload.googleMapsLinkKey },
+          { "location.googleMapsLink": exactMapLinkRegex(payload.location?.googleMapsLink || payload.googleMapsLinkKey) },
+        ],
+      },
+      matchType: "googleMapsLink",
+    });
+  }
+
+  if (payload.accountNameKey && payload.phoneNumberKey) {
+    checks.push({
+      query: {
+        $or: [
+          {
+            accountNameKey: payload.accountNameKey,
+            phoneNumberKey: payload.phoneNumberKey,
+          },
+          {
+            accountName: exactTextRegex(payload.accountName || payload.accountNameKey),
+            phoneNumber: exactTextRegex(payload.phoneNumber || payload.phoneNumberKey),
+          },
+        ],
+      },
+      matchType: "accountNamePhoneNumber",
+    });
+  }
+
+  if (payload.accountNameKey && payload.addressKey) {
+    checks.push({
+      query: {
+        $or: [
+          {
+            accountNameKey: payload.accountNameKey,
+            addressKey: payload.addressKey,
+          },
+          {
+            accountName: exactTextRegex(payload.accountName || payload.accountNameKey),
+            "location.address": exactTextRegex(payload.location?.address || payload.addressKey),
+          },
+        ],
+      },
+      matchType: "accountNameAddress",
+    });
+  }
+
+  return checks;
+};
+
+const findDuplicateAccount = async (payload, excludeAccountId) => {
+  const checks = buildDuplicateAccountQuery(payload);
+
+  for (const check of checks) {
+    let query = check.query;
+
+    if (excludeAccountId) {
+      query = {
+        $and: [
+          { _id: { $ne: excludeAccountId } },
+          query,
+        ],
+      };
+    }
+
+    const account = await Account.findOne(query).select("+googleMapsLinkKey +accountNameKey +phoneNumberKey +addressKey");
+
+    if (account) {
+      return { account, matchType: check.matchType };
+    }
+  }
+
+  return null;
+};
+
+const rejectDuplicateAccount = (res, duplicate) => res.status(409).json({
+  success: false,
+  message: "Account already exists",
+  data: {
+    duplicateAccountId: duplicate.account._id,
+    matchedOn: duplicate.matchType,
+  },
+});
 
 router.get("/", auth, async (req, res, next) => {
   try {
@@ -266,6 +391,12 @@ router.post("/", auth, async (req, res, next) => {
       });
     }
 
+    const duplicateAccount = await findDuplicateAccount(payload);
+
+    if (duplicateAccount) {
+      return rejectDuplicateAccount(res, duplicateAccount);
+    }
+
     const account = await Account.create({
       ...payload,
       createdBy: req.user.id,
@@ -300,18 +431,33 @@ router.patch("/:id", auth, async (req, res, next) => {
       });
     }
 
-    const account = await populateAccount(Account.findByIdAndUpdate(
-      req.params.id,
-      { $set: update },
-      { new: true, runValidators: true },
-    ));
+    const existingAccount = await Account.findById(req.params.id)
+      .select("+googleMapsLinkKey +accountNameKey +phoneNumberKey +addressKey");
 
-    if (!account) {
+    if (!existingAccount) {
       return res.status(404).json({
         success: false,
         message: "Account not found",
       });
     }
+
+    const mergedAccount = {
+      accountNameKey: update.accountNameKey !== undefined ? update.accountNameKey : existingAccount.accountNameKey,
+      phoneNumberKey: update.phoneNumberKey !== undefined ? update.phoneNumberKey : existingAccount.phoneNumberKey,
+      googleMapsLinkKey: update.googleMapsLinkKey !== undefined ? update.googleMapsLinkKey : existingAccount.googleMapsLinkKey,
+      addressKey: update.addressKey !== undefined ? update.addressKey : existingAccount.addressKey,
+    };
+    const duplicateAccount = await findDuplicateAccount(mergedAccount, req.params.id);
+
+    if (duplicateAccount) {
+      return rejectDuplicateAccount(res, duplicateAccount);
+    }
+
+    const account = await populateAccount(Account.findByIdAndUpdate(
+      req.params.id,
+      { $set: update },
+      { new: true, runValidators: true },
+    ));
 
     return res.status(200).json({
       success: true,
@@ -346,6 +492,12 @@ router.put("/:id", auth, async (req, res, next) => {
         success: false,
         message: "assignedMedicalRepIds must be an array of valid MongoDB ObjectIds",
       });
+    }
+
+    const duplicateAccount = await findDuplicateAccount(payload, req.params.id);
+
+    if (duplicateAccount) {
+      return rejectDuplicateAccount(res, duplicateAccount);
     }
 
     const account = await populateAccount(Account.findByIdAndUpdate(
