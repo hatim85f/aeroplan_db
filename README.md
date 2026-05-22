@@ -68,6 +68,84 @@ Success:
 }
 ```
 
+### GET /api/app-main-details
+
+Returns public app metadata for branding, app checks, links, and feature flags. The backend creates the default document in the `appMainDetails` collection if it does not exist yet.
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "App main details fetched successfully",
+  "data": {
+    "appName": "AeroPlan",
+    "appTagline": "Medical field planning and team execution",
+    "websiteURL": "https://aeroplan.app",
+    "logo": "https://res.cloudinary.com/dt3u7d1tv/image/upload/v1779485968/icon_opc5om.png",
+    "appWhiteLogo": "https://res.cloudinary.com/dt3u7d1tv/image/upload/v1779485925/logo_white_gmtwl5.png",
+    "favIcon": "https://res.cloudinary.com/dt3u7d1tv/image/upload/v1779485967/favicon_bmj72h.png",
+    "colors": {
+      "backgroundColor": "#F7F9FC",
+      "surface": "#ffffff",
+      "surfaceSoft": "#f3f7ff",
+      "primary": "#0f6fff",
+      "primaryDark": "#0757d7",
+      "primaryLight": "#dbeaff",
+      "secondary": "#6b46ff",
+      "success": "#18c287",
+      "warning": "#f6a900",
+      "danger": "#ef4444",
+      "textPrimary": "#07122f",
+      "textSecondary": "#536179",
+      "textMuted": "#8b97aa",
+      "border": "#dfe7f3",
+      "inputBackground": "#ffffff",
+      "shadow": "#b2b6",
+      "white": "#ffffff",
+      "black": "#000000"
+    },
+    "appVersion": "1.0.0",
+    "minimumSupportedVersion": "1.0.0",
+    "forceUpdateVersion": "",
+    "maintenanceMode": false,
+    "maintenanceMessage": "",
+    "supportEmail": "support@aeroplan.app",
+    "links": {
+      "privacyPolicyURL": "https://aeroplan.app/privacy",
+      "termsURL": "https://aeroplan.app/terms",
+      "supportURL": "https://aeroplan.app/support"
+    },
+    "featureFlags": {
+      "accountSelection": true,
+      "accountDuplicateChecks": true
+    },
+    "lastUpdated": "2026-05-23T00:00:00.000Z"
+  }
+}
+```
+
+### PATCH /api/app-main-details
+
+Admin-only endpoint for future dashboard edits. Also available as `PUT /api/app-main-details`.
+
+Headers:
+
+```http
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+Body can include any editable app metadata fields, for example:
+
+```json
+{
+  "websiteURL": "https://aeroplan.app",
+  "maintenanceMode": false,
+  "appVersion": "1.0.1"
+}
+```
+
 ### POST /api/auth/register
 
 Email/Password registration.
