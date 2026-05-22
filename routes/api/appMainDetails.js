@@ -127,7 +127,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.patch("/", auth, requireAdmin, async (req, res, next) => {
+const upsertMainDetails = async (req, res, next) => {
   try {
     const update = buildUpdatePayload(req.body, req.user.id);
     const details = await AppMainDetails.findOneAndUpdate(
@@ -147,28 +147,10 @@ router.patch("/", auth, requireAdmin, async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
-});
+};
 
-router.put("/", auth, requireAdmin, async (req, res, next) => {
-  try {
-    const update = buildUpdatePayload(req.body, req.user.id);
-    const details = await AppMainDetails.findOneAndUpdate(
-      { key: "main" },
-      {
-        $setOnInsert: DEFAULT_APP_MAIN_DETAILS,
-        $set: update,
-      },
-      { new: true, upsert: true, runValidators: true },
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "App main details updated successfully",
-      data: details,
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
+router.post("/", auth, requireAdmin, upsertMainDetails);
+router.put("/", auth, requireAdmin, upsertMainDetails);
+router.patch("/", auth, requireAdmin, upsertMainDetails);
 
 module.exports = router;

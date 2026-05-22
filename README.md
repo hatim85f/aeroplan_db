@@ -125,9 +125,9 @@ Success:
 }
 ```
 
-### PATCH /api/app-main-details
+### POST /api/app-main-details
 
-Admin-only endpoint for future dashboard edits. Also available as `PUT /api/app-main-details`.
+Admin-only endpoint for future dashboard edits. Creates or updates the main app metadata document. The same edit behavior is also available as `PUT /api/app-main-details` and `PATCH /api/app-main-details`.
 
 Headers:
 
