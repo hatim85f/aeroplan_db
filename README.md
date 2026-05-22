@@ -326,6 +326,7 @@ Body:
 ```json
 {
   "accountName": "City Hospital",
+  "accountType": "hospital",
   "keyContact": "Dr. Ahmed Hassan",
   "phoneNumber": "+971500000000",
   "location": {
@@ -478,7 +479,7 @@ Authorization: Bearer <token>
 
 ### PUT /api/accounts/:id
 
-Updates an account with the full editable payload. `accountName` is required.
+Updates an account with the full editable payload. `accountName` and `accountType` are required. `accountType` must be either `clinic` or `hospital`.
 
 Headers:
 

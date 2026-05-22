@@ -62,7 +62,7 @@ const normalizeLocation = (body) => {
 
 const normalizeAccountPayload = (body) => {
   const update = {};
-  const simpleFields = ["accountName", "keyContact", "phoneNumber"];
+  const simpleFields = ["accountName", "accountType", "keyContact", "phoneNumber"];
 
   simpleFields.forEach((field) => {
     if (body[field] !== undefined) {
@@ -86,6 +86,9 @@ const normalizeAccountPayload = (body) => {
 
   if (update.accountName !== undefined) {
     update.accountNameKey = normalizeTextKey(update.accountName);
+  }
+  if (update.accountType !== undefined) {
+    update.accountType = normalizeTextKey(update.accountType);
   }
   if (update.phoneNumber !== undefined) {
     const phoneNumberKey = normalizePhoneKey(update.phoneNumber);
@@ -384,6 +387,13 @@ router.post("/", auth, async (req, res, next) => {
       });
     }
 
+    if (!payload.accountType) {
+      return res.status(400).json({
+        success: false,
+        message: "accountType is required",
+      });
+    }
+
     if (!validateAssignedRepIds(payload.assignedMedicalRepIds)) {
       return res.status(400).json({
         success: false,
@@ -484,6 +494,13 @@ router.put("/:id", auth, async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: "accountName is required",
+      });
+    }
+
+    if (!payload.accountType) {
+      return res.status(400).json({
+        success: false,
+        message: "accountType is required",
       });
     }
 

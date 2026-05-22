@@ -39,6 +39,14 @@ const accountSchema = new Schema(
       trim: true,
       index: true,
     },
+    accountType: {
+      type: String,
+      enum: ["clinic", "hospital"],
+      required: true,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
     keyContact: {
       type: String,
       trim: true,
