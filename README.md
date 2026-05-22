@@ -310,6 +310,129 @@ Body:
 }
 ```
 
+### POST /api/accounts
+
+Creates an account. Protected by the backend JWT.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "accountName": "City Hospital",
+  "keyContact": "Dr. Ahmed Hassan",
+  "phoneNumber": "+971500000000",
+  "location": {
+    "address": "Dubai Healthcare City, Dubai",
+    "coordinates": {
+      "latitude": 25.2285,
+      "longitude": 55.3273
+    }
+  },
+  "assignedMedicalRepIds": ["rep-user-id-1", "rep-user-id-2"],
+  "lastPlannedVisit": {
+    "planId": "visit-plan-id",
+    "date": "2026-05-30T09:00:00.000Z"
+  }
+}
+```
+
+### GET /api/accounts
+
+Lists accounts with pagination. Protected by the backend JWT.
+
+Query examples:
+
+```text
+GET /api/accounts
+GET /api/accounts?page=1&limit=20
+GET /api/accounts?search=hospital
+GET /api/accounts?repId=rep-user-id
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Accounts fetched successfully",
+  "data": [
+    {
+      "_id": "account-id",
+      "accountName": "City Hospital",
+      "keyContact": "Dr. Ahmed Hassan",
+      "phoneNumber": "+971500000000",
+      "location": {
+        "address": "Dubai Healthcare City, Dubai",
+        "coordinates": {
+          "latitude": 25.2285,
+          "longitude": 55.3273
+        }
+      },
+      "assignedMedicalRepIds": [
+        {
+          "_id": "rep-user-id-1",
+          "fullName": "Sales Rep",
+          "email": "rep@example.com",
+          "phone": "+971500000000",
+          "appId": "AP-123456",
+          "role": "representative",
+          "status": "active"
+        }
+      ],
+      "lastPlannedVisit": {
+        "planId": "visit-plan-id",
+        "date": "2026-05-30T09:00:00.000Z"
+      }
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 1,
+    "pages": 1
+  }
+}
+```
+
+### GET /api/accounts/:id
+
+Returns one account by MongoDB id.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### PATCH /api/accounts/:id
+
+Partially updates an account. Send only changed fields.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+### PUT /api/accounts/:id
+
+Updates an account with the full editable payload. `accountName` is required.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
 ### POST /api/notifications/register-token
 
 Stores an Expo push token for the logged-in user. One user can have many device tokens.
