@@ -207,6 +207,55 @@ const rejectDuplicateAccount = (res, duplicate) => res.status(409).json({
   },
 });
 
+const getUniqueObjectIds = (ids) => [...new Set(ids.map((id) => String(id).trim()))];
+
+const validateBulkAssignmentPayload = ({ accountIds, medicalRepId }) => {
+  if (!Array.isArray(accountIds) || accountIds.length === 0) {
+    return "accountIds must be a non-empty array";
+  }
+
+  if (accountIds.length > 200) {
+    return "accountIds cannot contain more than 200 accounts";
+  }
+
+  if (!medicalRepId || !isValidObjectId(medicalRepId)) {
+    return "medicalRepId must be a valid MongoDB ObjectId";
+  }
+
+  if (!accountIds.every((accountId) => isValidObjectId(accountId))) {
+    return "Every accountId must be a valid MongoDB ObjectId";
+  }
+
+  return null;
+};
+
+const assignMedicalRepToAccounts = async ({ accountIds, medicalRepId }) => {
+  const uniqueAccountIds = getUniqueObjectIds(accountIds);
+
+  await Account.updateMany(
+    { _id: { $in: uniqueAccountIds } },
+    { $addToSet: { assignedMedicalRepIds: medicalRepId } },
+    { runValidators: true },
+  );
+
+  const updatedAccounts = await populateAccount(
+    Account.find({ _id: { $in: uniqueAccountIds } }).sort({ accountName: 1 }),
+  );
+  const updatedAccountIds = updatedAccounts.map((account) => String(account._id));
+  const updatedAccountIdSet = new Set(updatedAccountIds);
+
+  return {
+    updatedAccounts,
+    updatedAccountIds,
+    failed: uniqueAccountIds
+      .filter((accountId) => !updatedAccountIdSet.has(accountId))
+      .map((accountId) => ({
+        accountId,
+        reason: "Account not found",
+      })),
+  };
+};
+
 router.get("/", auth, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -278,6 +327,66 @@ router.get("/my-visits", auth, async (req, res, next) => {
         total,
         pages: Math.ceil(total / limit),
       },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/assign-rep-bulk", auth, async (req, res, next) => {
+  try {
+    const medicalRepId = req.body.medicalRepId || req.user.id;
+    const validationError = validateBulkAssignmentPayload({
+      accountIds: req.body.accountIds,
+      medicalRepId,
+    });
+
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: validationError,
+      });
+    }
+
+    const result = await assignMedicalRepToAccounts({
+      accountIds: req.body.accountIds,
+      medicalRepId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Medical rep assigned to accounts successfully",
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/bulk", auth, async (req, res, next) => {
+  try {
+    const medicalRepId = req.body.update?.addAssignedMedicalRepId;
+    const validationError = validateBulkAssignmentPayload({
+      accountIds: req.body.accountIds,
+      medicalRepId,
+    });
+
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: validationError,
+      });
+    }
+
+    const result = await assignMedicalRepToAccounts({
+      accountIds: req.body.accountIds,
+      medicalRepId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Bulk account update completed successfully",
+      data: result,
     });
   } catch (error) {
     return next(error);

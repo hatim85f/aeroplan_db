@@ -545,6 +545,64 @@ Headers:
 Authorization: Bearer <token>
 ```
 
+### PATCH /api/accounts/assign-rep-bulk
+
+Assigns one medical rep to many accounts. Uses `$addToSet`, so the rep id is not duplicated if already assigned.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "accountIds": ["account-id-1", "account-id-2"],
+  "medicalRepId": "rep-user-id"
+}
+```
+
+`medicalRepId` can be omitted to assign the logged-in user.
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Medical rep assigned to accounts successfully",
+  "data": {
+    "updatedAccountIds": ["account-id-1", "account-id-2"],
+    "failed": [],
+    "updatedAccounts": []
+  }
+}
+```
+
+### PATCH /api/accounts/bulk
+
+Generic bulk wrapper for the same assignment behavior.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "accountIds": ["account-id-1", "account-id-2"],
+  "update": {
+    "addAssignedMedicalRepId": "rep-user-id"
+  }
+}
+```
+
 ### PATCH /api/accounts/:id/unselect-for-visit
 
 Removes the logged-in user from `assignedMedicalRepIds`.
