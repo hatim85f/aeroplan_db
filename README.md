@@ -330,18 +330,37 @@ Body:
   "phoneNumber": "+971500000000",
   "location": {
     "address": "Dubai Healthcare City, Dubai",
-    "coordinates": {
-      "latitude": 25.2285,
-      "longitude": 55.3273
-    }
+    "googleMapsLink": "https://maps.app.goo.gl/example"
   },
-  "assignedMedicalRepIds": ["rep-user-id-1", "rep-user-id-2"],
+  "userId": "rep-user-id",
   "lastPlannedVisit": {
     "planId": "visit-plan-id",
     "date": "2026-05-30T09:00:00.000Z"
   }
 }
 ```
+
+`assignedMedicalRepIds` is optional. Accounts can be created without any assigned medical rep so representatives can later select the accounts they plan to visit. For pre-assignment during create or update, the API accepts any of these shapes:
+
+```json
+{
+  "userId": "rep-user-id"
+}
+```
+
+```json
+{
+  "assignedMedicalRepId": "rep-user-id"
+}
+```
+
+```json
+{
+  "assignedMedicalRepIds": ["rep-user-id-1", "rep-user-id-2"]
+}
+```
+
+`location.googleMapsLink` is the preferred map field. Existing coordinate data is still stored if sent, but frontend account forms should use a Google Maps link instead of latitude and longitude inputs.
 
 ### GET /api/accounts
 
@@ -354,6 +373,7 @@ GET /api/accounts
 GET /api/accounts?page=1&limit=20
 GET /api/accounts?search=hospital
 GET /api/accounts?repId=rep-user-id
+GET /api/accounts/my-visits
 ```
 
 Success:
@@ -370,10 +390,7 @@ Success:
       "phoneNumber": "+971500000000",
       "location": {
         "address": "Dubai Healthcare City, Dubai",
-        "coordinates": {
-          "latitude": 25.2285,
-          "longitude": 55.3273
-        }
+        "googleMapsLink": "https://maps.app.goo.gl/example"
       },
       "assignedMedicalRepIds": [
         {
@@ -420,6 +437,26 @@ Headers:
 ```http
 Authorization: Bearer <token>
 Content-Type: application/json
+```
+
+### PATCH /api/accounts/:id/select-for-visit
+
+Adds the logged-in user to `assignedMedicalRepIds`, allowing a medical representative to select an account they plan to visit.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### PATCH /api/accounts/:id/unselect-for-visit
+
+Removes the logged-in user from `assignedMedicalRepIds`.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
 ```
 
 ### PUT /api/accounts/:id

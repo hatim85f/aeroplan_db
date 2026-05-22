@@ -8,6 +8,10 @@ const locationSchema = new Schema(
       type: String,
       trim: true,
     },
+    googleMapsLink: {
+      type: String,
+      trim: true,
+    },
     coordinates: {
       latitude: Number,
       longitude: Number,
@@ -66,6 +70,11 @@ const accountSchema = new Schema(
   { timestamps: true },
 );
 
-accountSchema.index({ accountName: "text", keyContact: "text", phoneNumber: "text" });
+accountSchema.index({
+  accountName: "text",
+  keyContact: "text",
+  phoneNumber: "text",
+  "location.address": "text",
+});
 
 module.exports = mongoose.model("Account", accountSchema);
