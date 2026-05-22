@@ -62,7 +62,13 @@ const normalizeLocation = (body) => {
 
 const normalizeAccountPayload = (body) => {
   const update = {};
-  const simpleFields = ["accountName", "accountType", "keyContact", "phoneNumber"];
+  const simpleFields = [
+    "accountName",
+    "accountType",
+    "keyContact",
+    "contactPersonEmail",
+    "phoneNumber",
+  ];
 
   simpleFields.forEach((field) => {
     if (body[field] !== undefined) {
@@ -89,6 +95,9 @@ const normalizeAccountPayload = (body) => {
   }
   if (update.accountType !== undefined) {
     update.accountType = normalizeTextKey(update.accountType);
+  }
+  if (update.contactPersonEmail !== undefined) {
+    update.contactPersonEmail = normalizeTextKey(update.contactPersonEmail);
   }
   if (update.phoneNumber !== undefined) {
     const phoneNumberKey = normalizePhoneKey(update.phoneNumber);
@@ -268,6 +277,7 @@ router.get("/", auth, async (req, res, next) => {
       query.$or = [
         { accountName: { $regex: search, $options: "i" } },
         { keyContact: { $regex: search, $options: "i" } },
+        { contactPersonEmail: { $regex: search, $options: "i" } },
         { phoneNumber: { $regex: search, $options: "i" } },
         { "location.address": { $regex: search, $options: "i" } },
         { "location.googleMapsLink": { $regex: search, $options: "i" } },

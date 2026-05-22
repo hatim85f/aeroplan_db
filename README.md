@@ -406,6 +406,7 @@ Body:
   "accountName": "City Hospital",
   "accountType": "hospital",
   "keyContact": "Dr. Ahmed Hassan",
+  "contactPersonEmail": "ahmed.hassan@example.com",
   "phoneNumber": "+971500000000",
   "location": {
     "address": "Dubai Healthcare City, Dubai",
@@ -483,6 +484,7 @@ Success:
       "_id": "account-id",
       "accountName": "City Hospital",
       "keyContact": "Dr. Ahmed Hassan",
+      "contactPersonEmail": "ahmed.hassan@example.com",
       "phoneNumber": "+971500000000",
       "location": {
         "address": "Dubai Healthcare City, Dubai",

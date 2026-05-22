@@ -51,6 +51,11 @@ const accountSchema = new Schema(
       type: String,
       trim: true,
     },
+    contactPersonEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+    },
     phoneNumber: {
       type: String,
       trim: true,
@@ -107,6 +112,7 @@ const accountSchema = new Schema(
 accountSchema.index({
   accountName: "text",
   keyContact: "text",
+  contactPersonEmail: "text",
   phoneNumber: "text",
   "location.address": "text",
 });
