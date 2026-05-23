@@ -279,6 +279,21 @@ const buildProductUpdate = (payload) => {
   return update;
 };
 
+const formatBulkProductFailure = ({ index, product, reason, duplicateProductId }) => {
+  const failure = {
+    index,
+    productName: product?.productName,
+    productNickname: product?.productNickname,
+    reason,
+  };
+
+  if (duplicateProductId) {
+    failure.duplicateProductId = duplicateProductId;
+  }
+
+  return failure;
+};
+
 const buildProductQuery = (user, queryParams) => {
   const query = {};
 
@@ -406,6 +421,118 @@ router.get("/", auth, async (req, res, next) => {
         limit,
         total,
         pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/bulk", auth, requireManager, async (req, res, next) => {
+  try {
+    const productsInput = Array.isArray(req.body) ? req.body : req.body.products;
+
+    if (!Array.isArray(productsInput) || productsInput.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "products must be a non-empty array",
+      });
+    }
+
+    if (productsInput.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: "products cannot contain more than 500 rows",
+      });
+    }
+
+    const created = [];
+    const failed = [];
+    const batchNicknameKeys = new Set();
+
+    for (const [index, productInput] of productsInput.entries()) {
+      const requestValidationError = validateProductRequestBody(productInput || {});
+
+      if (requestValidationError) {
+        failed.push(formatBulkProductFailure({
+          index,
+          product: productInput,
+          reason: requestValidationError,
+        }));
+        continue;
+      }
+
+      let payload;
+
+      try {
+        payload = await normalizeProductPayload(productInput || {});
+      } catch (error) {
+        failed.push(formatBulkProductFailure({
+          index,
+          product: productInput,
+          reason: error.message || "Invalid product row",
+        }));
+        continue;
+      }
+
+      const validationError = validateProductPayload(payload);
+
+      if (validationError) {
+        failed.push(formatBulkProductFailure({
+          index,
+          product: productInput,
+          reason: validationError,
+        }));
+        continue;
+      }
+
+      if (batchNicknameKeys.has(payload.productNicknameKey)) {
+        failed.push(formatBulkProductFailure({
+          index,
+          product: productInput,
+          reason: "Duplicate productNickname in upload",
+        }));
+        continue;
+      }
+
+      const existingProduct = await Product.findOne({
+        productNicknameKey: payload.productNicknameKey,
+      }).select("+productNicknameKey");
+
+      if (existingProduct) {
+        failed.push(formatBulkProductFailure({
+          index,
+          product: productInput,
+          reason: "Product nickname already exists",
+          duplicateProductId: existingProduct._id,
+        }));
+        continue;
+      }
+
+      const product = await Product.create({
+        ...payload,
+        createdBy: req.user.id,
+      });
+
+      created.push(product);
+      batchNicknameKeys.add(payload.productNicknameKey);
+    }
+
+    const createdProductIds = created.map((product) => String(product._id));
+    const createdProducts = createdProductIds.length > 0
+      ? await Product.find({ _id: { $in: createdProductIds } }).sort({ createdAt: -1 })
+      : [];
+
+    return res.status(201).json({
+      success: true,
+      message: "Bulk products import completed",
+      data: {
+        total: productsInput.length,
+        createdCount: createdProducts.length,
+        failedCount: failed.length,
+        createdProductIds,
+        createdProducts,
+        failed,
       },
     });
   } catch (error) {

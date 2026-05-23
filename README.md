@@ -868,6 +868,105 @@ Headers:
 Authorization: Bearer <token>
 ```
 
+### POST /api/products/bulk
+
+Creates many products from an array, such as rows parsed from Excel on the frontend. `imageUrl` is optional. The backend validates each row, checks `productNickname` uniqueness, creates valid products, and returns created/failed summary.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Manager/admin only.
+
+Preferred body:
+
+```json
+{
+  "products": [
+    {
+      "productName": "Aerocef 1g",
+      "productNickname": "AEROCEF-1G",
+      "description": "Injectable antibiotic",
+      "lineId": "ANTI-INFECTIVE",
+      "imageUrl": "https://example.com/product.png",
+      "prices": {
+        "direct": {
+          "cifUsd": 10,
+          "wholesaleAed": 45,
+          "retailAed": 60
+        },
+        "upp": {
+          "cifUsd": 11,
+          "wholesaleAed": 48,
+          "retailAed": 64
+        },
+        "institutional": {
+          "cifUsd": 9,
+          "wholesaleAed": 40,
+          "retailAed": 55
+        }
+      },
+      "defaultFoc": {
+        "direct": {
+          "percentage": 5,
+          "notes": "Default direct FOC"
+        },
+        "upp": {
+          "percentage": 3,
+          "notes": "Default UPP FOC"
+        },
+        "institutional": {
+          "percentage": 10,
+          "notes": "Default institutional FOC"
+        }
+      }
+    }
+  ]
+}
+```
+
+A raw array is also accepted:
+
+```json
+[
+  {
+    "productName": "Aerocef 1g",
+    "productNickname": "AEROCEF-1G",
+    "lineId": "ANTI-INFECTIVE"
+  }
+]
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Bulk products import completed",
+  "data": {
+    "total": 10,
+    "createdCount": 8,
+    "failedCount": 2,
+    "createdProductIds": ["product-id-1"],
+    "createdProducts": [],
+    "failed": [
+      {
+        "index": 3,
+        "productName": "Aerocef 1g",
+        "productNickname": "AEROCEF-1G",
+        "reason": "Product nickname already exists",
+        "duplicateProductId": "existing-product-id"
+      }
+    ]
+  }
+}
+```
+
+Maximum rows per request: `500`.
+
 ### PATCH /api/products/:id
 
 Updates product details. Manager/admin only. Partial nested price and FOC updates are supported without replacing other channels.
