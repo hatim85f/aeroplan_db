@@ -408,6 +408,8 @@ Body:
   "keyContact": "Dr. Ahmed Hassan",
   "contactPersonEmail": "ahmed.hassan@example.com",
   "phoneNumber": "+971500000000",
+  "area": "Dubai Marina",
+  "territory": "Dubai",
   "location": {
     "address": "Dubai Healthcare City, Dubai",
     "googleMapsLink": "https://maps.app.goo.gl/example"
@@ -470,6 +472,7 @@ GET /api/accounts
 GET /api/accounts?page=1&limit=20
 GET /api/accounts?search=hospital
 GET /api/accounts?repId=rep-user-id
+GET /api/accounts?territory=Dubai&area=Dubai Marina
 GET /api/accounts/my-visits
 ```
 
@@ -486,6 +489,8 @@ Success:
       "keyContact": "Dr. Ahmed Hassan",
       "contactPersonEmail": "ahmed.hassan@example.com",
       "phoneNumber": "+971500000000",
+      "area": "Dubai Marina",
+      "territory": "Dubai",
       "location": {
         "address": "Dubai Healthcare City, Dubai",
         "googleMapsLink": "https://maps.app.goo.gl/example"

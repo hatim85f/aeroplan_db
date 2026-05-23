@@ -68,6 +68,8 @@ const normalizeAccountPayload = (body) => {
     "keyContact",
     "contactPersonEmail",
     "phoneNumber",
+    "area",
+    "territory",
   ];
 
   simpleFields.forEach((field) => {
@@ -279,6 +281,8 @@ router.get("/", auth, async (req, res, next) => {
         { keyContact: { $regex: search, $options: "i" } },
         { contactPersonEmail: { $regex: search, $options: "i" } },
         { phoneNumber: { $regex: search, $options: "i" } },
+        { area: { $regex: search, $options: "i" } },
+        { territory: { $regex: search, $options: "i" } },
         { "location.address": { $regex: search, $options: "i" } },
         { "location.googleMapsLink": { $regex: search, $options: "i" } },
       ];
@@ -292,6 +296,14 @@ router.get("/", auth, async (req, res, next) => {
         });
       }
       query.assignedMedicalRepIds = req.query.repId;
+    }
+
+    if (req.query.area) {
+      query.area = { $regex: String(req.query.area).trim(), $options: "i" };
+    }
+
+    if (req.query.territory) {
+      query.territory = { $regex: String(req.query.territory).trim(), $options: "i" };
     }
 
     const [accounts, total] = await Promise.all([

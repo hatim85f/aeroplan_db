@@ -60,6 +60,16 @@ const accountSchema = new Schema(
       type: String,
       trim: true,
     },
+    area: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    territory: {
+      type: String,
+      trim: true,
+      index: true,
+    },
     accountNameKey: {
       type: String,
       trim: true,
@@ -114,6 +124,8 @@ accountSchema.index({
   keyContact: "text",
   contactPersonEmail: "text",
   phoneNumber: "text",
+  area: "text",
+  territory: "text",
   "location.address": "text",
 });
 accountSchema.index({ accountNameKey: 1, phoneNumberKey: 1 }, { sparse: true });
