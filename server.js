@@ -13,6 +13,7 @@ const teamInvitationRoutes = require('./routes/api/teamInvitations');
 const lineRoutes = require('./routes/api/lines');
 const accountRoutes = require('./routes/api/accounts');
 const appMainDetailsRoutes = require('./routes/api/appMainDetails');
+const productRoutes = require('./routes/api/products');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 
 const app = express();
@@ -55,6 +56,7 @@ app.use('/api/team-invitations', teamInvitationRoutes);
 app.use('/api/lines', lineRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/app-main-details', appMainDetailsRoutes);
+app.use('/api/products', productRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

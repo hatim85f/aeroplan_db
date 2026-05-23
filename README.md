@@ -702,6 +702,239 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
+### POST /api/products
+
+Creates a product. Products belong to a line and use `productNickname` instead of product code.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Manager/admin only.
+
+Body:
+
+```json
+{
+  "productName": "Aerocef 1g",
+  "productNickname": "AEROCEF-1G",
+  "description": "Injectable antibiotic",
+  "lineId": "ANTI-INFECTIVE",
+  "imageUrl": "https://example.com/product.png",
+  "status": "active",
+  "isActive": true,
+  "prices": {
+    "direct": {
+      "cifUsd": 10,
+      "wholesaleAed": 45,
+      "retailAed": 60
+    },
+    "upp": {
+      "cifUsd": 11,
+      "wholesaleAed": 48,
+      "retailAed": 64
+    },
+    "institutional": {
+      "cifUsd": 9,
+      "wholesaleAed": 40,
+      "retailAed": 55
+    }
+  },
+  "defaultFoc": {
+    "direct": {
+      "percentage": 5,
+      "notes": "Default direct FOC"
+    },
+    "upp": {
+      "percentage": 3,
+      "notes": "Default UPP FOC"
+    },
+    "institutional": {
+      "percentage": 10,
+      "notes": "Default institutional FOC"
+    }
+  }
+}
+```
+
+Required fields:
+
+```text
+productName
+productNickname
+lineId
+```
+
+Channel keys must be exactly:
+
+```text
+direct
+upp
+institutional
+```
+
+Prices default to `0`. FOC `percentage` must be between `0` and `100`.
+
+### GET /api/products
+
+Lists products with pagination and filters. Managers/admins can list active and inactive products. Representatives only receive active products.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Query examples:
+
+```text
+GET /api/products
+GET /api/products?page=1&limit=20
+GET /api/products?search=aerocef
+GET /api/products?status=active
+GET /api/products?lineId=ANTI-INFECTIVE
+GET /api/products?channel=direct&channelAvailable=true
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Products fetched successfully",
+  "data": [
+    {
+      "_id": "product-id",
+      "productName": "Aerocef 1g",
+      "productNickname": "AEROCEF-1G",
+      "lineId": "ANTI-INFECTIVE",
+      "lineName": "Anti Infective",
+      "status": "active",
+      "isActive": true,
+      "prices": {
+        "direct": {
+          "cifUsd": 10,
+          "wholesaleAed": 45,
+          "retailAed": 60
+        },
+        "upp": {
+          "cifUsd": 11,
+          "wholesaleAed": 48,
+          "retailAed": 64
+        },
+        "institutional": {
+          "cifUsd": 9,
+          "wholesaleAed": 40,
+          "retailAed": 55
+        }
+      },
+      "defaultFoc": {
+        "direct": {
+          "percentage": 5,
+          "notes": "Default direct FOC"
+        },
+        "upp": {
+          "percentage": 3,
+          "notes": "Default UPP FOC"
+        },
+        "institutional": {
+          "percentage": 10,
+          "notes": "Default institutional FOC"
+        }
+      },
+      "createdAt": "2026-05-24T00:00:00.000Z",
+      "updatedAt": "2026-05-24T00:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 1,
+    "pages": 1
+  }
+}
+```
+
+### GET /api/products/:id
+
+Returns one product. Representatives can only fetch active products.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+### PATCH /api/products/:id
+
+Updates product details. Manager/admin only. Partial nested price and FOC updates are supported without replacing other channels.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Example:
+
+```json
+{
+  "productName": "Aerocef 1g Vial",
+  "prices": {
+    "direct": {
+      "retailAed": 62
+    }
+  },
+  "defaultFoc": {
+    "direct": {
+      "percentage": 6,
+      "notes": "Updated direct FOC"
+    }
+  }
+}
+```
+
+### PATCH /api/products/:id/status
+
+Activates or deactivates a product. Manager/admin only.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "status": "inactive"
+}
+```
+
+or:
+
+```json
+{
+  "isActive": false
+}
+```
+
+### DELETE /api/products/:id
+
+Soft deletes a product by setting `status: inactive` and `isActive: false`. Manager/admin only.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
 ### POST /api/notifications/register-token
 
 Stores an Expo push token for the logged-in user. One user can have many device tokens.
