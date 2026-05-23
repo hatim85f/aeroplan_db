@@ -247,8 +247,8 @@ const validateChannelNumbers = (payload) => {
   for (const [channel, channelFoc] of Object.entries(payload.defaultFoc || {})) {
     const percentage = channelFoc.percentage;
 
-    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
-      return `defaultFoc.${channel}.percentage must be between 0 and 100`;
+    if (!Number.isFinite(percentage) || percentage < 0) {
+      return `defaultFoc.${channel}.percentage must be a number greater than or equal to 0`;
     }
   }
 

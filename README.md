@@ -776,7 +776,7 @@ upp
 institutional
 ```
 
-Prices default to `0`. FOC `percentage` must be between `0` and `100`.
+Prices default to `0`. FOC `percentage` must be a number greater than or equal to `0`.
 
 ### GET /api/products
 
