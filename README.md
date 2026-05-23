@@ -531,6 +531,77 @@ Headers:
 Authorization: Bearer <token>
 ```
 
+### POST /api/accounts/bulk
+
+Creates many accounts from an array, such as rows parsed from an Excel file on the frontend. The backend validates each row, applies duplicate checks, creates valid accounts, and returns a summary instead of requiring the frontend to call `POST /api/accounts` once per row.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Preferred body:
+
+```json
+{
+  "accounts": [
+    {
+      "accountName": "City Hospital",
+      "accountType": "hospital",
+      "keyContact": "Dr. Ahmed Hassan",
+      "contactPersonEmail": "ahmed.hassan@example.com",
+      "phoneNumber": "+971500000000",
+      "area": "Dubai Marina",
+      "territory": "Dubai",
+      "location": {
+        "address": "Dubai Healthcare City, Dubai",
+        "googleMapsLink": "https://maps.app.goo.gl/example"
+      }
+    }
+  ]
+}
+```
+
+A raw array is also accepted:
+
+```json
+[
+  {
+    "accountName": "City Hospital",
+    "accountType": "hospital"
+  }
+]
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "message": "Bulk accounts import completed",
+  "data": {
+    "total": 10,
+    "createdCount": 8,
+    "failedCount": 2,
+    "createdAccountIds": ["account-id-1"],
+    "createdAccounts": [],
+    "failed": [
+      {
+        "index": 3,
+        "accountName": "Duplicate Hospital",
+        "reason": "Account already exists",
+        "duplicateAccountId": "existing-account-id",
+        "matchedOn": "googleMapsLink"
+      }
+    ]
+  }
+}
+```
+
+Maximum rows per request: `500`.
+
 ### PATCH /api/accounts/:id
 
 Partially updates an account. Send only changed fields.
@@ -622,7 +693,7 @@ Authorization: Bearer <token>
 
 ### PUT /api/accounts/:id
 
-Updates an account with the full editable payload. `accountName` and `accountType` are required. `accountType` must be either `clinic` or `hospital`.
+Updates an account with the full editable payload. `accountName` and `accountType` are required. `accountType` must be one of `clinic`, `hospital`, `pharmacy`, or `other`.
 
 Headers:
 

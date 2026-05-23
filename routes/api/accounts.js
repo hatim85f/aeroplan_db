@@ -125,6 +125,22 @@ const validateAssignedRepIds = (repIds) => {
   return Array.isArray(repIds) && repIds.every((repId) => isValidObjectId(repId));
 };
 
+const validateCreateAccountPayload = (payload) => {
+  if (!payload.accountName) {
+    return "accountName is required";
+  }
+
+  if (!payload.accountType) {
+    return "accountType is required";
+  }
+
+  if (!validateAssignedRepIds(payload.assignedMedicalRepIds)) {
+    return "assignedMedicalRepIds must be an array of valid MongoDB ObjectIds";
+  }
+
+  return null;
+};
+
 const populateAccount = (query) => query.populate(
   "assignedMedicalRepIds",
   "fullName email phone appId role status territory area lineId",
@@ -217,6 +233,37 @@ const rejectDuplicateAccount = (res, duplicate) => res.status(409).json({
     matchedOn: duplicate.matchType,
   },
 });
+
+const buildBatchDuplicateKeys = (payload) => {
+  const keys = [];
+
+  if (payload.googleMapsLinkKey) {
+    keys.push(`googleMapsLink:${payload.googleMapsLinkKey}`);
+  }
+  if (payload.accountNameKey && payload.phoneNumberKey) {
+    keys.push(`accountNamePhoneNumber:${payload.accountNameKey}:${payload.phoneNumberKey}`);
+  }
+  if (payload.accountNameKey && payload.addressKey) {
+    keys.push(`accountNameAddress:${payload.accountNameKey}:${payload.addressKey}`);
+  }
+
+  return keys;
+};
+
+const formatImportFailure = ({ index, account, reason, duplicate }) => {
+  const failure = {
+    index,
+    accountName: account?.accountName,
+    reason,
+  };
+
+  if (duplicate) {
+    failure.duplicateAccountId = duplicate.account ? duplicate.account._id : undefined;
+    failure.matchedOn = duplicate.matchType;
+  }
+
+  return failure;
+};
 
 const getUniqueObjectIds = (ids) => [...new Set(ids.map((id) => String(id).trim()))];
 
@@ -415,6 +462,96 @@ router.patch("/bulk", auth, async (req, res, next) => {
   }
 });
 
+router.post("/bulk", auth, async (req, res, next) => {
+  try {
+    const accountsInput = Array.isArray(req.body) ? req.body : req.body.accounts;
+
+    if (!Array.isArray(accountsInput) || accountsInput.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "accounts must be a non-empty array",
+      });
+    }
+
+    if (accountsInput.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: "accounts cannot contain more than 500 rows",
+      });
+    }
+
+    const created = [];
+    const failed = [];
+    const batchKeys = new Set();
+
+    for (const [index, accountInput] of accountsInput.entries()) {
+      const payload = normalizeAccountPayload(accountInput || {});
+      const validationError = validateCreateAccountPayload(payload);
+
+      if (validationError) {
+        failed.push(formatImportFailure({
+          index,
+          account: accountInput,
+          reason: validationError,
+        }));
+        continue;
+      }
+
+      const duplicateKey = buildBatchDuplicateKeys(payload).find((key) => batchKeys.has(key));
+
+      if (duplicateKey) {
+        failed.push(formatImportFailure({
+          index,
+          account: accountInput,
+          reason: "Duplicate row in upload",
+          duplicate: { matchType: duplicateKey.split(":")[0] },
+        }));
+        continue;
+      }
+
+      const duplicateAccount = await findDuplicateAccount(payload);
+
+      if (duplicateAccount) {
+        failed.push(formatImportFailure({
+          index,
+          account: accountInput,
+          reason: "Account already exists",
+          duplicate: duplicateAccount,
+        }));
+        continue;
+      }
+
+      const account = await Account.create({
+        ...payload,
+        createdBy: req.user.id,
+      });
+
+      created.push(account);
+      buildBatchDuplicateKeys(payload).forEach((key) => batchKeys.add(key));
+    }
+
+    const createdAccountIds = created.map((account) => String(account._id));
+    const createdAccounts = createdAccountIds.length > 0
+      ? await populateAccount(Account.find({ _id: { $in: createdAccountIds } }).sort({ createdAt: -1 }))
+      : [];
+
+    return res.status(201).json({
+      success: true,
+      message: "Bulk accounts import completed",
+      data: {
+        total: accountsInput.length,
+        createdCount: createdAccounts.length,
+        failedCount: failed.length,
+        createdAccountIds,
+        createdAccounts,
+        failed,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/:id", auth, async (req, res, next) => {
   try {
     if (!isValidObjectId(req.params.id)) {
@@ -510,25 +647,12 @@ router.patch("/:id/unselect-for-visit", auth, async (req, res, next) => {
 router.post("/", auth, async (req, res, next) => {
   try {
     const payload = normalizeAccountPayload(req.body);
+    const validationError = validateCreateAccountPayload(payload);
 
-    if (!payload.accountName) {
+    if (validationError) {
       return res.status(400).json({
         success: false,
-        message: "accountName is required",
-      });
-    }
-
-    if (!payload.accountType) {
-      return res.status(400).json({
-        success: false,
-        message: "accountType is required",
-      });
-    }
-
-    if (!validateAssignedRepIds(payload.assignedMedicalRepIds)) {
-      return res.status(400).json({
-        success: false,
-        message: "assignedMedicalRepIds must be an array of valid MongoDB ObjectIds",
+        message: validationError,
       });
     }
 
