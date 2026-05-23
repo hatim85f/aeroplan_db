@@ -41,7 +41,7 @@ const accountSchema = new Schema(
     },
     accountType: {
       type: String,
-      enum: ["clinic", "hospital"],
+      enum: ["clinic", "hospital", "pharmacy", "other"],
       required: true,
       trim: true,
       lowercase: true,
