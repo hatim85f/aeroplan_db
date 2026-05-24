@@ -354,7 +354,13 @@ router.get("/", auth, async (req, res, next) => {
     }
 
     const [accounts, total] = await Promise.all([
-      populateAccount(Account.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit)),
+      populateAccount(
+        Account.find(query)
+          .collation({ locale: "en", strength: 2 })
+          .sort({ accountName: 1 })
+          .skip(skip)
+          .limit(limit),
+      ),
       Account.countDocuments(query),
     ]);
 
@@ -382,7 +388,13 @@ router.get("/my-visits", auth, async (req, res, next) => {
     const query = { assignedMedicalRepIds: req.user.id };
 
     const [accounts, total] = await Promise.all([
-      populateAccount(Account.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit)),
+      populateAccount(
+        Account.find(query)
+          .collation({ locale: "en", strength: 2 })
+          .sort({ accountName: 1 })
+          .skip(skip)
+          .limit(limit),
+      ),
       Account.countDocuments(query),
     ]);
 
