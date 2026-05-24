@@ -3,12 +3,11 @@ const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Line = require("../../models/Line");
 const Product = require("../../models/Product");
+const SalesChannel = require("../../models/SalesChannel");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
-
-const CHANNEL_KEYS = ["direct", "upp", "institutional"];
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -72,7 +71,11 @@ const normalizeNumber = (value) => {
   return Number(value);
 };
 
-const normalizeBoolean = (value) => {
+const normalizeBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+
   if (typeof value === "boolean") {
     return value;
   }
@@ -80,69 +83,97 @@ const normalizeBoolean = (value) => {
   return String(value).trim().toLowerCase() === "true";
 };
 
-const normalizeChannelPrices = (prices = {}) => {
-  return CHANNEL_KEYS.reduce((normalizedPrices, channel) => {
-    if (prices[channel] === undefined) {
-      return normalizedPrices;
+const normalizeChannelPricing = async (channelPricing, { partial = false } = {}) => {
+  if (channelPricing === undefined) {
+    if (partial) {
+      return undefined;
     }
 
-    normalizedPrices[channel] = {
-      cifUsd: normalizeNumber(prices[channel]?.cifUsd),
-      wholesaleAed: normalizeNumber(prices[channel]?.wholesaleAed),
-      retailAed: normalizeNumber(prices[channel]?.retailAed),
-    };
+    const error = new Error("channelPricing must contain at least one item");
+    error.statusCode = 400;
+    throw error;
+  }
 
-    return normalizedPrices;
-  }, {});
-};
+  if (!Array.isArray(channelPricing) || channelPricing.length === 0) {
+    const error = new Error("channelPricing must contain at least one item");
+    error.statusCode = 400;
+    throw error;
+  }
 
-const normalizeDefaultFoc = (defaultFoc = {}) => {
-  return CHANNEL_KEYS.reduce((normalizedFoc, channel) => {
-    if (defaultFoc[channel] === undefined) {
-      return normalizedFoc;
+  const normalized = [];
+  const channelIds = new Set();
+
+  for (const [index, item] of channelPricing.entries()) {
+    const channelId = item?.channelId;
+
+    if (!channelId || !isValidObjectId(channelId)) {
+      const error = new Error(`channelPricing.${index}.channelId must be a valid MongoDB ObjectId`);
+      error.statusCode = 400;
+      throw error;
     }
 
-    normalizedFoc[channel] = {
-      percentage: normalizeNumber(defaultFoc[channel]?.percentage),
-      notes: defaultFoc[channel]?.notes,
-    };
+    const channelIdKey = String(channelId);
 
-    return normalizedFoc;
-  }, {});
+    if (channelIds.has(channelIdKey)) {
+      const error = new Error("Duplicate channelId is not allowed in channelPricing");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    channelIds.add(channelIdKey);
+
+    const salesChannel = await SalesChannel.findOne({
+      _id: channelId,
+      status: "active",
+      isActive: true,
+    });
+
+    if (!salesChannel) {
+      const error = new Error(`Active sales channel not found for channelPricing.${index}.channelId`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const defaultFocPercentage = salesChannel.focEnabled
+      ? normalizeNumber(item.defaultFocPercentage)
+      : 0;
+
+    normalized.push({
+      channelId: salesChannel._id,
+      channelName: salesChannel.channelName,
+      channelKey: salesChannel.channelKey,
+      isAvailable: normalizeBoolean(item.isAvailable, true),
+      cifUsd: normalizeNumber(item.cifUsd),
+      wholesaleAed: normalizeNumber(item.wholesaleAed),
+      retailAed: normalizeNumber(item.retailAed),
+      focEnabled: salesChannel.focEnabled,
+      defaultFocPercentage,
+      focNotes: item.focNotes,
+    });
+  }
+
+  return normalized;
 };
 
-const buildDefaultChannelPrices = () => CHANNEL_KEYS.reduce((prices, channel) => {
-  prices[channel] = {
-    cifUsd: 0,
-    wholesaleAed: 0,
-    retailAed: 0,
-  };
+const validateChannelPricingNumbers = (channelPricing = []) => {
+  const priceFields = ["cifUsd", "wholesaleAed", "retailAed"];
 
-  return prices;
-}, {});
+  for (const [index, item] of channelPricing.entries()) {
+    for (const field of priceFields) {
+      const value = item[field];
 
-const buildDefaultChannelFoc = () => CHANNEL_KEYS.reduce((defaultFoc, channel) => {
-  defaultFoc[channel] = {
-    percentage: 0,
-    notes: undefined,
-  };
+      if (!Number.isFinite(value) || value < 0) {
+        return `channelPricing.${index}.${field} must be a number greater than or equal to 0`;
+      }
+    }
 
-  return defaultFoc;
-}, {});
-
-const validateChannelKeys = (value, fieldName) => {
-  if (value === undefined) {
-    return null;
-  }
-
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return `${fieldName} must be an object`;
-  }
-
-  const invalidChannel = Object.keys(value).find((channel) => !CHANNEL_KEYS.includes(channel));
-
-  if (invalidChannel) {
-    return `${fieldName} channel keys must be direct, upp, or institutional`;
+    if (
+      !Number.isFinite(item.defaultFocPercentage)
+      || item.defaultFocPercentage < 0
+      || item.defaultFocPercentage > 100
+    ) {
+      return `channelPricing.${index}.defaultFocPercentage must be a number between 0 and 100`;
+    }
   }
 
   return null;
@@ -178,16 +209,8 @@ const normalizeProductPayload = async (body, { partial = false } = {}) => {
     payload.lineName = body.lineName;
   }
 
-  if (body.prices !== undefined) {
-    payload.prices = normalizeChannelPrices(body.prices);
-  } else if (!partial) {
-    payload.prices = buildDefaultChannelPrices();
-  }
-
-  if (body.defaultFoc !== undefined) {
-    payload.defaultFoc = normalizeDefaultFoc(body.defaultFoc);
-  } else if (!partial) {
-    payload.defaultFoc = buildDefaultChannelFoc();
+  if (body.channelPricing !== undefined || !partial) {
+    payload.channelPricing = await normalizeChannelPricing(body.channelPricing, { partial });
   }
 
   if (payload.status !== undefined) {
@@ -214,6 +237,10 @@ const validateProductPayload = (payload, { partial = false } = {}) => {
     return "lineId is required";
   }
 
+  if (!partial && (!Array.isArray(payload.channelPricing) || payload.channelPricing.length === 0)) {
+    return "channelPricing must contain at least one item";
+  }
+
   if (payload.productNickname !== undefined && !String(payload.productNickname).trim()) {
     return "productNickname cannot be empty";
   }
@@ -222,61 +249,25 @@ const validateProductPayload = (payload, { partial = false } = {}) => {
     return "status must be active or inactive";
   }
 
-  const channelValidationError = validateChannelNumbers(payload);
-
-  if (channelValidationError) {
-    return channelValidationError;
+  if (payload.organizationId !== undefined && payload.organizationId && !isValidObjectId(payload.organizationId)) {
+    return "organizationId must be a valid MongoDB ObjectId";
   }
 
-  return null;
-};
+  const channelPricingValidationError = validateChannelPricingNumbers(payload.channelPricing);
 
-const validateChannelNumbers = (payload) => {
-  const priceFields = ["cifUsd", "wholesaleAed", "retailAed"];
-
-  for (const [channel, channelPrices] of Object.entries(payload.prices || {})) {
-    for (const field of priceFields) {
-      const value = channelPrices[field];
-
-      if (!Number.isFinite(value) || value < 0) {
-        return `prices.${channel}.${field} must be a number greater than or equal to 0`;
-      }
-    }
-  }
-
-  for (const [channel, channelFoc] of Object.entries(payload.defaultFoc || {})) {
-    const percentage = channelFoc.percentage;
-
-    if (!Number.isFinite(percentage) || percentage < 0) {
-      return `defaultFoc.${channel}.percentage must be a number greater than or equal to 0`;
-    }
+  if (channelPricingValidationError) {
+    return channelPricingValidationError;
   }
 
   return null;
 };
 
 const validateProductRequestBody = (body) => {
-  return validateChannelKeys(body.prices, "prices")
-    || validateChannelKeys(body.defaultFoc, "defaultFoc");
-};
+  if (body.prices !== undefined || body.defaultFoc !== undefined) {
+    return "Use channelPricing instead of legacy prices/defaultFoc fields";
+  }
 
-const buildProductUpdate = (payload) => {
-  const update = {};
-
-  Object.entries(payload).forEach(([field, value]) => {
-    if (field === "prices" || field === "defaultFoc") {
-      Object.entries(value || {}).forEach(([channel, channelValue]) => {
-        Object.entries(channelValue || {}).forEach(([channelField, channelFieldValue]) => {
-          update[`${field}.${channel}.${channelField}`] = channelFieldValue;
-        });
-      });
-      return;
-    }
-
-    update[field] = value;
-  });
-
-  return update;
+  return null;
 };
 
 const formatBulkProductFailure = ({ index, product, reason, duplicateProductId }) => {
@@ -305,7 +296,7 @@ const buildProductQuery = (user, queryParams) => {
   }
 
   if (queryParams.isActive !== undefined && isManagerRole(user.role)) {
-    query.isActive = queryParams.isActive === "true";
+    query.isActive = normalizeBoolean(queryParams.isActive);
   }
 
   if (queryParams.lineId) {
@@ -320,28 +311,45 @@ const buildProductQuery = (user, queryParams) => {
       { description: { $regex: search, $options: "i" } },
       { lineName: { $regex: search, $options: "i" } },
       { lineId: { $regex: search, $options: "i" } },
+      { "channelPricing.channelName": { $regex: search, $options: "i" } },
+      { "channelPricing.channelKey": { $regex: search, $options: "i" } },
     ];
   }
 
-  if (queryParams.channel) {
-    const channel = String(queryParams.channel).trim().toLowerCase();
+  const channelMatch = {};
 
-    if (CHANNEL_KEYS.includes(channel) && queryParams.channelAvailable === "true") {
-      query.$and = [
-        ...(query.$and || []),
-        {
-          $or: [
-            { [`prices.${channel}.cifUsd`]: { $gt: 0 } },
-            { [`prices.${channel}.wholesaleAed`]: { $gt: 0 } },
-            { [`prices.${channel}.retailAed`]: { $gt: 0 } },
-            { [`defaultFoc.${channel}.percentage`]: { $gt: 0 } },
-          ],
-        },
-      ];
+  if (queryParams.channelId) {
+    if (!isValidObjectId(queryParams.channelId)) {
+      query._id = null;
+    } else {
+      channelMatch.channelId = new mongoose.Types.ObjectId(queryParams.channelId);
     }
   }
 
+  if (queryParams.channelKey) {
+    channelMatch.channelKey = String(queryParams.channelKey).trim().toLowerCase();
+  }
+
+  if (queryParams.channelAvailable === "true" || !isManagerRole(user.role)) {
+    channelMatch.isAvailable = true;
+  }
+
+  if (Object.keys(channelMatch).length > 0) {
+    query.channelPricing = { $elemMatch: channelMatch };
+  }
+
   return query;
+};
+
+const filterRepresentativeProduct = (product, user) => {
+  if (isManagerRole(user.role)) {
+    return product;
+  }
+
+  return {
+    ...product,
+    channelPricing: (product.channelPricing || []).filter((item) => item.isAvailable),
+  };
 };
 
 router.post("/", auth, requireManager, async (req, res, next) => {
@@ -408,14 +416,14 @@ router.get("/", auth, async (req, res, next) => {
     const query = buildProductQuery(user, req.query);
 
     const [products, total] = await Promise.all([
-      Product.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Product.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Product.countDocuments(query),
     ]);
 
     return res.status(200).json({
       success: true,
       message: "Products fetched successfully",
-      data: products,
+      data: products.map((product) => filterRepresentativeProduct(product, user)),
       pagination: {
         page,
         limit,
@@ -555,9 +563,10 @@ router.get("/:id", auth, async (req, res, next) => {
     if (!isManagerRole(user?.role)) {
       query.status = "active";
       query.isActive = true;
+      query.channelPricing = { $elemMatch: { isAvailable: true } };
     }
 
-    const product = await Product.findOne(query);
+    const product = await Product.findOne(query).lean();
 
     if (!product) {
       return res.status(404).json({
@@ -569,7 +578,7 @@ router.get("/:id", auth, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "Product fetched successfully",
-      data: product,
+      data: filterRepresentativeProduct(product, user),
     });
   } catch (error) {
     return next(error);
@@ -627,7 +636,7 @@ router.patch("/:id", auth, requireManager, async (req, res, next) => {
 
     const product = await Product.findByIdAndUpdate(
       req.params.id,
-      { $set: buildProductUpdate(payload) },
+      { $set: payload },
       { new: true, runValidators: true },
     );
 

@@ -2,8 +2,28 @@ const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
 
-const channelPriceSchema = new Schema(
+const channelPricingSchema = new Schema(
   {
+    channelId: {
+      type: Schema.Types.ObjectId,
+      ref: "SalesChannel",
+      required: true,
+    },
+    channelName: {
+      type: String,
+      trim: true,
+    },
+    channelKey: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+    },
+    isAvailable: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
     cifUsd: {
       type: Number,
       default: 0,
@@ -19,18 +39,17 @@ const channelPriceSchema = new Schema(
       default: 0,
       min: 0,
     },
-  },
-  { _id: false },
-);
-
-const channelFocSchema = new Schema(
-  {
-    percentage: {
+    focEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    defaultFocPercentage: {
       type: Number,
       default: 0,
       min: 0,
+      max: 100,
     },
-    notes: {
+    focNotes: {
       type: String,
       trim: true,
     },
@@ -92,31 +111,21 @@ const productSchema = new Schema(
       index: true,
     },
     prices: {
-      direct: {
-        type: channelPriceSchema,
-        default: () => ({}),
-      },
-      upp: {
-        type: channelPriceSchema,
-        default: () => ({}),
-      },
-      institutional: {
-        type: channelPriceSchema,
-        default: () => ({}),
-      },
+      type: Schema.Types.Mixed,
+      select: false,
     },
     defaultFoc: {
-      direct: {
-        type: channelFocSchema,
-        default: () => ({}),
-      },
-      upp: {
-        type: channelFocSchema,
-        default: () => ({}),
-      },
-      institutional: {
-        type: channelFocSchema,
-        default: () => ({}),
+      type: Schema.Types.Mixed,
+      select: false,
+    },
+    channelPricing: {
+      type: [channelPricingSchema],
+      default: [],
+      validate: {
+        validator(value) {
+          return Array.isArray(value) && value.length > 0;
+        },
+        message: "At least one channelPricing item is required",
       },
     },
     createdBy: {
@@ -140,6 +149,11 @@ productSchema.index({
   description: "text",
   lineId: "text",
   lineName: "text",
+  "channelPricing.channelName": "text",
+  "channelPricing.channelKey": "text",
 });
+productSchema.index({ "channelPricing.channelId": 1 });
+productSchema.index({ "channelPricing.channelKey": 1 });
+productSchema.index({ lineId: 1, status: 1, isActive: 1 });
 
 module.exports = mongoose.model("Product", productSchema);
