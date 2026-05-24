@@ -40,7 +40,7 @@ const requireManager = async (req, res, next) => {
   return next();
 };
 
-const resolveLine = async (lineId, lineName) => {
+const resolveLine = async (lineId, lineName, context = {}) => {
   const normalizedLineId = normalizeLineId(lineId);
 
   if (!normalizedLineId) {
@@ -49,7 +49,14 @@ const resolveLine = async (lineId, lineName) => {
     throw error;
   }
 
-  const line = await Line.findOne({ lineId: normalizedLineId });
+  let line;
+
+  if (context.lineCache?.has(normalizedLineId)) {
+    line = context.lineCache.get(normalizedLineId);
+  } else {
+    line = await Line.findOne({ lineId: normalizedLineId });
+    context.lineCache?.set(normalizedLineId, line);
+  }
 
   if (!line) {
     const error = new Error("Line not found");
@@ -83,7 +90,7 @@ const normalizeBoolean = (value, defaultValue = false) => {
   return String(value).trim().toLowerCase() === "true";
 };
 
-const normalizeChannelPricing = async (channelPricing, { partial = false } = {}) => {
+const normalizeChannelPricing = async (channelPricing, { partial = false, context = {} } = {}) => {
   if (channelPricing === undefined) {
     if (partial) {
       return undefined;
@@ -105,34 +112,56 @@ const normalizeChannelPricing = async (channelPricing, { partial = false } = {})
 
   for (const [index, item] of channelPricing.entries()) {
     const channelId = item?.channelId;
+    const channelKey = item?.channelKey;
 
-    if (!channelId || !isValidObjectId(channelId)) {
-      const error = new Error(`channelPricing.${index}.channelId must be a valid MongoDB ObjectId`);
+    if ((!channelId || !isValidObjectId(channelId)) && !channelKey) {
+      const error = new Error(`channelPricing.${index}.channelId must be a valid MongoDB ObjectId or channelKey is required`);
       error.statusCode = 400;
       throw error;
     }
 
-    const channelIdKey = String(channelId);
+    const salesChannelQuery = {
+      status: "active",
+      isActive: true,
+    };
+
+    let channelCache;
+    let channelCacheKey;
+
+    if (channelId && isValidObjectId(channelId)) {
+      salesChannelQuery._id = channelId;
+      channelCache = context.channelCacheById;
+      channelCacheKey = String(channelId);
+    } else {
+      salesChannelQuery.channelKey = SalesChannel.normalizeChannelKey(channelKey);
+      channelCache = context.channelCacheByKey;
+      channelCacheKey = salesChannelQuery.channelKey;
+    }
+
+    let salesChannel;
+
+    if (channelCache?.has(channelCacheKey)) {
+      salesChannel = channelCache.get(channelCacheKey);
+    } else {
+      salesChannel = await SalesChannel.findOne(salesChannelQuery);
+      channelCache?.set(channelCacheKey, salesChannel);
+    }
+
+    if (!salesChannel) {
+      const error = new Error(`Active sales channel not found for channelPricing.${index}.${channelId ? "channelId" : "channelKey"}`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const channelIdKey = String(salesChannel._id);
 
     if (channelIds.has(channelIdKey)) {
-      const error = new Error("Duplicate channelId is not allowed in channelPricing");
+      const error = new Error("Duplicate sales channel is not allowed in channelPricing");
       error.statusCode = 400;
       throw error;
     }
 
     channelIds.add(channelIdKey);
-
-    const salesChannel = await SalesChannel.findOne({
-      _id: channelId,
-      status: "active",
-      isActive: true,
-    });
-
-    if (!salesChannel) {
-      const error = new Error(`Active sales channel not found for channelPricing.${index}.channelId`);
-      error.statusCode = 400;
-      throw error;
-    }
 
     const defaultFocPercentage = salesChannel.focEnabled
       ? normalizeNumber(item.defaultFocPercentage)
@@ -169,17 +198,15 @@ const validateChannelPricingNumbers = (channelPricing = []) => {
 
     if (
       !Number.isFinite(item.defaultFocPercentage)
-      || item.defaultFocPercentage < 0
-      || item.defaultFocPercentage > 100
     ) {
-      return `channelPricing.${index}.defaultFocPercentage must be a number between 0 and 100`;
+      return `channelPricing.${index}.defaultFocPercentage must be a number`;
     }
   }
 
   return null;
 };
 
-const normalizeProductPayload = async (body, { partial = false } = {}) => {
+const normalizeProductPayload = async (body, { partial = false, context = {} } = {}) => {
   const payload = {};
   const simpleFields = [
     "productName",
@@ -202,7 +229,7 @@ const normalizeProductPayload = async (body, { partial = false } = {}) => {
   }
 
   if (body.lineId !== undefined || (!partial && body.lineId)) {
-    const line = await resolveLine(body.lineId, body.lineName);
+    const line = await resolveLine(body.lineId, body.lineName, context);
     payload.lineId = line.lineId;
     payload.lineName = line.lineName;
   } else if (body.lineName !== undefined) {
@@ -210,7 +237,7 @@ const normalizeProductPayload = async (body, { partial = false } = {}) => {
   }
 
   if (body.channelPricing !== undefined || !partial) {
-    payload.channelPricing = await normalizeChannelPricing(body.channelPricing, { partial });
+    payload.channelPricing = await normalizeChannelPricing(body.channelPricing, { partial, context });
   }
 
   if (payload.status !== undefined) {
@@ -283,6 +310,77 @@ const formatBulkProductFailure = ({ index, product, reason, duplicateProductId }
   }
 
   return failure;
+};
+
+const getFirstDefined = (input, keys) => {
+  for (const key of keys) {
+    if (input?.[key] !== undefined) {
+      return input[key];
+    }
+  }
+
+  return undefined;
+};
+
+const normalizeBulkProductInput = (input = {}) => {
+  const product = {
+    ...input,
+    productName: getFirstDefined(input, ["productName", "Product Name *", "Product Name"]),
+    productNickname: getFirstDefined(input, ["productNickname", "Product Nickname"]),
+    lineId: getFirstDefined(input, ["lineId", "Line ID *", "Line ID"]),
+    description: getFirstDefined(input, ["description", "Description"]),
+    imageUrl: getFirstDefined(input, ["imageUrl", "Image URL"]),
+  };
+
+  const channelKey = getFirstDefined(input, ["channelKey", "Channel Key *", "Channel Key"]);
+
+  if (product.channelPricing === undefined && channelKey !== undefined) {
+    product.channelPricing = [
+      {
+        channelKey,
+        cifUsd: getFirstDefined(input, ["cifUsd", "CIF USD"]),
+        wholesaleAed: getFirstDefined(input, ["wholesaleAed", "Wholesale AED"]),
+        retailAed: getFirstDefined(input, ["retailAed", "Retail AED"]),
+        defaultFocPercentage: getFirstDefined(input, ["defaultFocPercentage", "Default FOC %"]),
+        focNotes: getFirstDefined(input, ["focNotes", "FOC Notes"]),
+      },
+    ];
+  }
+
+  return product;
+};
+
+const mergeBulkProductRows = (productsInput) => {
+  const productsByNickname = new Map();
+
+  for (const [index, input] of productsInput.entries()) {
+    const product = normalizeBulkProductInput(input || {});
+    const nicknameKey = normalizeProductNicknameKey(product.productNickname);
+    const mergeKey = nicknameKey || `__row_${index}`;
+    const existing = productsByNickname.get(mergeKey);
+
+    if (!existing) {
+      productsByNickname.set(mergeKey, {
+        index,
+        product: {
+          ...product,
+          channelPricing: Array.isArray(product.channelPricing)
+            ? [...product.channelPricing]
+            : product.channelPricing,
+        },
+      });
+      continue;
+    }
+
+    if (Array.isArray(product.channelPricing)) {
+      existing.product.channelPricing = [
+        ...(Array.isArray(existing.product.channelPricing) ? existing.product.channelPricing : []),
+        ...product.channelPricing,
+      ];
+    }
+  }
+
+  return Array.from(productsByNickname.values());
 };
 
 const buildProductQuery = (user, queryParams) => {
@@ -416,7 +514,12 @@ router.get("/", auth, async (req, res, next) => {
     const query = buildProductQuery(user, req.query);
 
     const [products, total] = await Promise.all([
-      Product.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Product.find(query)
+        .collation({ locale: "en", strength: 2 })
+        .sort({ productName: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       Product.countDocuments(query),
     ]);
 
@@ -438,6 +541,9 @@ router.get("/", auth, async (req, res, next) => {
 
 router.post("/bulk", auth, requireManager, async (req, res, next) => {
   try {
+    req.setTimeout(300000);
+    res.setTimeout(300000);
+
     const productsInput = Array.isArray(req.body) ? req.body : req.body.products;
 
     if (!Array.isArray(productsInput) || productsInput.length === 0) {
@@ -454,11 +560,18 @@ router.post("/bulk", auth, requireManager, async (req, res, next) => {
       });
     }
 
+    const productRows = mergeBulkProductRows(productsInput);
+    const bulkContext = {
+      lineCache: new Map(),
+      channelCacheById: new Map(),
+      channelCacheByKey: new Map(),
+    };
     const created = [];
     const failed = [];
     const batchNicknameKeys = new Set();
+    const validRows = [];
 
-    for (const [index, productInput] of productsInput.entries()) {
+    for (const { index, product: productInput } of productRows) {
       const requestValidationError = validateProductRequestBody(productInput || {});
 
       if (requestValidationError) {
@@ -473,7 +586,7 @@ router.post("/bulk", auth, requireManager, async (req, res, next) => {
       let payload;
 
       try {
-        payload = await normalizeProductPayload(productInput || {});
+        payload = await normalizeProductPayload(productInput || {}, { context: bulkContext });
       } catch (error) {
         failed.push(formatBulkProductFailure({
           index,
@@ -503,9 +616,22 @@ router.post("/bulk", auth, requireManager, async (req, res, next) => {
         continue;
       }
 
-      const existingProduct = await Product.findOne({
-        productNicknameKey: payload.productNicknameKey,
-      }).select("+productNicknameKey");
+      batchNicknameKeys.add(payload.productNicknameKey);
+      validRows.push({ index, productInput, payload });
+    }
+
+    const existingProducts = validRows.length > 0
+      ? await Product.find({
+        productNicknameKey: { $in: validRows.map((row) => row.payload.productNicknameKey) },
+      }).select("+productNicknameKey").lean()
+      : [];
+    const existingProductsByNickname = new Map(
+      existingProducts.map((product) => [product.productNicknameKey, product]),
+    );
+    const productsToCreate = [];
+
+    for (const { index, productInput, payload } of validRows) {
+      const existingProduct = existingProductsByNickname.get(payload.productNicknameKey);
 
       if (existingProduct) {
         failed.push(formatBulkProductFailure({
@@ -517,13 +643,14 @@ router.post("/bulk", auth, requireManager, async (req, res, next) => {
         continue;
       }
 
-      const product = await Product.create({
+      productsToCreate.push({
         ...payload,
         createdBy: req.user.id,
       });
+    }
 
-      created.push(product);
-      batchNicknameKeys.add(payload.productNicknameKey);
+    if (productsToCreate.length > 0) {
+      created.push(...await Product.insertMany(productsToCreate, { ordered: false }));
     }
 
     const createdProductIds = created.map((product) => String(product._id));

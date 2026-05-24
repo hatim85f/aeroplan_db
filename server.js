@@ -19,6 +19,7 @@ const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 300000;
 
 app.use(helmet());
 app.use(cors());
@@ -59,6 +60,7 @@ app.use('/api/accounts', accountRoutes);
 app.use('/api/app-main-details', appMainDetailsRoutes);
 app.use('/api/sales-channels', salesChannelRoutes);
 app.use('/api/products', productRoutes);
+app.use('/products', productRoutes);
 
 app.use((req, res) => {
   res.status(404).json({
@@ -73,9 +75,13 @@ const startServer = async () => {
   await connectDB();
   await cleanupObsoleteIndexes();
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.headersTimeout = REQUEST_TIMEOUT_MS + 5000;
+  server.keepAliveTimeout = 65000;
 };
 
 startServer();

@@ -46,8 +46,6 @@ const channelPricingSchema = new Schema(
     defaultFocPercentage: {
       type: Number,
       default: 0,
-      min: 0,
-      max: 100,
     },
     focNotes: {
       type: String,
