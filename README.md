@@ -1034,6 +1034,66 @@ Headers:
 Authorization: Bearer <token>
 ```
 
+### POST /api/foc-overrides
+
+Creates account-level FOC override entries. One account can have many entries, each linked to a product with its own override percentage, optional notes, and validity dates.
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "accountId": "account-id",
+  "overrides": [
+    {
+      "productId": "product-id-1",
+      "overridePercentage": 12.5,
+      "notes": "Ramadan campaign override",
+      "startDate": "2026-06-01T00:00:00.000Z",
+      "endDate": "2026-06-30T23:59:59.999Z"
+    },
+    {
+      "productId": "product-id-2",
+      "overridePercentage": 8,
+      "startDate": "2026-07-01T00:00:00.000Z",
+      "endDate": "2026-07-31T23:59:59.999Z"
+    }
+  ]
+}
+```
+
+`entries` can be used instead of `overrides`. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`.
+
+### GET /api/foc-overrides
+
+Lists FOC override documents with pagination. Optional filters: `accountId` and `productId`.
+
+### GET /api/foc-overrides/:accountId
+
+Returns all FOC override entries for one account.
+
+### PATCH /api/foc-overrides/:accountId
+
+Replaces the full override entry array for one account. The request body uses the same `overrides` or `entries` array shape as create.
+
+### PATCH /api/foc-overrides/:accountId/entries/:entryId
+
+Updates one override entry. Any of `productId`, `overridePercentage`, `notes`, `startDate`, or `endDate` can be sent.
+
+### DELETE /api/foc-overrides/:accountId
+
+Deletes all FOC overrides for one account.
+
+### DELETE /api/foc-overrides/:accountId/entries/:entryId
+
+Deletes one override entry from the account.
+
 ### POST /api/notifications/register-token
 
 Stores an Expo push token for the logged-in user. One user can have many device tokens.

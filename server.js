@@ -14,6 +14,7 @@ const lineRoutes = require('./routes/api/lines');
 const accountRoutes = require('./routes/api/accounts');
 const appMainDetailsRoutes = require('./routes/api/appMainDetails');
 const productRoutes = require('./routes/api/products');
+const focOverrideRoutes = require('./routes/api/focOverrides');
 const salesChannelRoutes = require('./routes/api/salesChannels');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 
@@ -60,6 +61,7 @@ app.use('/api/accounts', accountRoutes);
 app.use('/api/app-main-details', appMainDetailsRoutes);
 app.use('/api/sales-channels', salesChannelRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/foc-overrides', focOverrideRoutes);
 app.use('/products', productRoutes);
 
 app.use((req, res) => {
