@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
+const SalesTeamMember = require("../../models/SalesTeamMember");
 
 const router = express.Router();
 
@@ -42,6 +43,16 @@ const normalizeAssignedRepIds = (body) => {
   }
 
   return undefined;
+};
+
+const normalizeSalesTeamIds = (body) => {
+  if (body.salesTeamIds === undefined) {
+    return undefined;
+  }
+
+  return Array.isArray(body.salesTeamIds)
+    ? [...new Set(body.salesTeamIds)]
+    : body.salesTeamIds;
 };
 
 const normalizeLocation = (body) => {
@@ -88,6 +99,11 @@ const normalizeAccountPayload = (body) => {
     update.assignedMedicalRepIds = assignedMedicalRepIds;
   }
 
+  const salesTeamIds = normalizeSalesTeamIds(body);
+  if (salesTeamIds !== undefined) {
+    update.salesTeamIds = salesTeamIds;
+  }
+
   if (body.lastPlannedVisit !== undefined) {
     update.lastPlannedVisit = body.lastPlannedVisit || {};
   }
@@ -125,6 +141,43 @@ const validateAssignedRepIds = (repIds) => {
   return Array.isArray(repIds) && repIds.every((repId) => isValidObjectId(repId));
 };
 
+const validateSalesTeamIdsShape = (salesTeamIds) => {
+  if (salesTeamIds === undefined) {
+    return true;
+  }
+
+  return Array.isArray(salesTeamIds) && salesTeamIds.every((salesTeamId) => isValidObjectId(salesTeamId));
+};
+
+const validateActiveSalesTeamIds = async (salesTeamIds) => {
+  if (salesTeamIds === undefined) {
+    return null;
+  }
+
+  if (!validateSalesTeamIdsShape(salesTeamIds)) {
+    return "salesTeamIds must be an array of valid MongoDB ObjectIds";
+  }
+
+  if (salesTeamIds.length === 0) {
+    return null;
+  }
+
+  const uniqueSalesTeamIds = getUniqueObjectIds(salesTeamIds);
+  const members = await SalesTeamMember.find({
+    _id: { $in: uniqueSalesTeamIds },
+    status: "active",
+    isActive: true,
+  }).select("_id").lean();
+  const foundMemberIds = new Set(members.map((member) => String(member._id)));
+  const missingMemberId = uniqueSalesTeamIds.find((salesTeamId) => !foundMemberIds.has(salesTeamId));
+
+  if (missingMemberId) {
+    return `Active sales team member not found: ${missingMemberId}`;
+  }
+
+  return null;
+};
+
 const validateCreateAccountPayload = (payload) => {
   if (!payload.accountName) {
     return "accountName is required";
@@ -138,13 +191,22 @@ const validateCreateAccountPayload = (payload) => {
     return "assignedMedicalRepIds must be an array of valid MongoDB ObjectIds";
   }
 
+  if (!validateSalesTeamIdsShape(payload.salesTeamIds)) {
+    return "salesTeamIds must be an array of valid MongoDB ObjectIds";
+  }
+
   return null;
 };
 
-const populateAccount = (query) => query.populate(
-  "assignedMedicalRepIds",
-  "fullName email phone appId role status territory area lineId",
-);
+const populateAccount = (query) => query
+  .populate(
+    "assignedMedicalRepIds",
+    "fullName email phone appId role status territory area lineId",
+  )
+  .populate(
+    "salesTeamIds",
+    "fullName email phone position status isActive managerId",
+  );
 
 const buildDuplicateAccountQuery = (payload) => {
   const checks = [];
@@ -509,6 +571,17 @@ router.post("/bulk", auth, async (req, res, next) => {
         continue;
       }
 
+      const salesTeamValidationError = await validateActiveSalesTeamIds(payload.salesTeamIds);
+
+      if (salesTeamValidationError) {
+        failed.push(formatImportFailure({
+          index,
+          account: accountInput,
+          reason: salesTeamValidationError,
+        }));
+        continue;
+      }
+
       const duplicateKey = buildBatchDuplicateKeys(payload).find((key) => batchKeys.has(key));
 
       if (duplicateKey) {
@@ -668,6 +741,15 @@ router.post("/", auth, async (req, res, next) => {
       });
     }
 
+    const salesTeamValidationError = await validateActiveSalesTeamIds(payload.salesTeamIds);
+
+    if (salesTeamValidationError) {
+      return res.status(400).json({
+        success: false,
+        message: salesTeamValidationError,
+      });
+    }
+
     const duplicateAccount = await findDuplicateAccount(payload);
 
     if (duplicateAccount) {
@@ -705,6 +787,15 @@ router.patch("/:id", auth, async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: "assignedMedicalRepIds must be an array of valid MongoDB ObjectIds",
+      });
+    }
+
+    const salesTeamValidationError = await validateActiveSalesTeamIds(update.salesTeamIds);
+
+    if (salesTeamValidationError) {
+      return res.status(400).json({
+        success: false,
+        message: salesTeamValidationError,
       });
     }
 
@@ -775,6 +866,15 @@ router.put("/:id", auth, async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: "assignedMedicalRepIds must be an array of valid MongoDB ObjectIds",
+      });
+    }
+
+    const salesTeamValidationError = await validateActiveSalesTeamIds(payload.salesTeamIds);
+
+    if (salesTeamValidationError) {
+      return res.status(400).json({
+        success: false,
+        message: salesTeamValidationError,
       });
     }
 

@@ -41,7 +41,7 @@ const accountSchema = new Schema(
     },
     accountType: {
       type: String,
-      enum: ["clinic", "hospital", "pharmacy", "other"],
+      enum: ["clinic", "hospital", "pharmacy", "drugstore", "other"],
       required: true,
       trim: true,
       lowercase: true,
@@ -104,6 +104,13 @@ const accountSchema = new Schema(
       {
         type: Schema.Types.ObjectId,
         ref: "User",
+        index: true,
+      },
+    ],
+    salesTeamIds: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "SalesTeamMember",
         index: true,
       },
     ],

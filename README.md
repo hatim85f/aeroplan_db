@@ -1092,6 +1092,116 @@ Deletes all FOC overrides for one account.
 
 Deletes one override entry from the account.
 
+### POST /api/sales-team
+
+Creates a sales team member. Sales team members are company salespeople used for account assignment and future order email CC; they are not required to be AeroPlan app users.
+
+Headers:
+
+```http
+Authorization: Bearer <manager-or-admin-token>
+Content-Type: application/json
+```
+
+Manager/admin only.
+
+Body:
+
+```json
+{
+  "fullName": "Ahmed Sales",
+  "phone": "+971500000000",
+  "email": "ahmed.sales@example.com",
+  "position": "Salesman",
+  "accountIds": ["account-id-1", "account-id-2"],
+  "managerId": "sales-manager-id",
+  "notes": "Handles Abu Dhabi private accounts",
+  "status": "active",
+  "isActive": true
+}
+```
+
+KAM / manager body:
+
+```json
+{
+  "fullName": "Yehya KAM",
+  "phone": "+971500000001",
+  "email": "yehya.kam@example.com",
+  "position": "KAM",
+  "teamManaged": ["salesman-id-1", "salesman-id-2"],
+  "status": "active",
+  "isActive": true
+}
+```
+
+### GET /api/sales-team
+
+Lists sales team members with pagination.
+
+Query examples:
+
+```text
+GET /api/sales-team
+GET /api/sales-team?page=1&limit=20
+GET /api/sales-team?search=ahmed
+GET /api/sales-team?status=active
+GET /api/sales-team?isActive=true
+GET /api/sales-team?position=KAM
+GET /api/sales-team?accountId=account-id
+GET /api/sales-team?managerId=sales-manager-id
+```
+
+Representatives only receive active sales team members. Managers/admins can filter active and inactive records.
+
+### GET /api/sales-team/:id
+
+Returns one sales team member. Representatives can only fetch active sales team members.
+
+### GET /api/sales-team/account/:accountId
+
+Returns active sales team members assigned to one account. This is intended for future order creation and email CC selection.
+
+### PATCH /api/sales-team/:id
+
+Updates a sales team member. Manager/admin only. Accepts any editable fields from the create body.
+
+### PATCH /api/sales-team/:id/status
+
+Activates or deactivates a sales team member. Manager/admin only.
+
+Body:
+
+```json
+{
+  "status": "inactive"
+}
+```
+
+or:
+
+```json
+{
+  "isActive": false
+}
+```
+
+### DELETE /api/sales-team/:id
+
+Soft deletes a sales team member by setting `status: inactive` and `isActive: false`. Manager/admin only.
+
+### Account Sales Team Linking
+
+Accounts now optionally accept assigned sales team members:
+
+```json
+{
+  "salesTeamIds": ["sales-team-member-id-1", "sales-team-member-id-2"]
+}
+```
+
+This field is supported by account create, partial update, full update, and bulk import. When provided, every id must be an active sales team member. Account responses populate `salesTeamIds` with `fullName`, `email`, `phone`, `position`, `status`, `isActive`, and `managerId`.
+
 ### POST /api/notifications/register-token
 
 Stores an Expo push token for the logged-in user. One user can have many device tokens.
