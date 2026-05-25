@@ -9,6 +9,9 @@ const router = express.Router();
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
+const START_DATE_KEYS = ["startDate", "validFrom", "fromDate", "validityStartDate"];
+const END_DATE_KEYS = ["endDate", "validTo", "toDate", "validityEndDate"];
+
 const getEntriesInput = (body) => {
   if (Array.isArray(body)) {
     return body;
@@ -25,16 +28,65 @@ const getEntriesInput = (body) => {
   return undefined;
 };
 
+const getFirstDefined = (input = {}, keys = []) => {
+  for (const key of keys) {
+    if (input[key] !== undefined && input[key] !== null && input[key] !== "") {
+      return input[key];
+    }
+  }
+
+  return undefined;
+};
+
 const parseDate = (value) => {
-  const date = new Date(value);
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "number") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const normalizedValue = String(value).trim();
+  const isoDateOnlyMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (isoDateOnlyMatch) {
+    const [, year, month, day] = isoDateOnlyMatch;
+    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  }
+
+  const slashDateMatch = normalizedValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+  if (slashDateMatch) {
+    const [, first, second, year] = slashDateMatch;
+    const firstNumber = Number(first);
+    const secondNumber = Number(second);
+    const day = firstNumber > 12 ? firstNumber : secondNumber;
+    const month = firstNumber > 12 ? secondNumber : firstNumber;
+    return new Date(Date.UTC(Number(year), month - 1, day));
+  }
+
+  const date = new Date(normalizedValue);
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
 const normalizeValidity = (body = {}, { existing, required = true } = {}) => {
-  const hasStartDate = body.startDate !== undefined;
-  const hasEndDate = body.endDate !== undefined;
-  const startDate = hasStartDate ? parseDate(body.startDate) : existing?.startDate;
-  const endDate = hasEndDate ? parseDate(body.endDate) : existing?.endDate;
+  const entries = getEntriesInput(body) || [];
+  const fallbackEntry = entries.find((entry) => (
+    getFirstDefined(entry, START_DATE_KEYS) !== undefined
+    || getFirstDefined(entry, END_DATE_KEYS) !== undefined
+  )) || {};
+  const rawStartDate = getFirstDefined(body, START_DATE_KEYS) ?? getFirstDefined(fallbackEntry, START_DATE_KEYS);
+  const rawEndDate = getFirstDefined(body, END_DATE_KEYS) ?? getFirstDefined(fallbackEntry, END_DATE_KEYS);
+  const hasStartDate = rawStartDate !== undefined;
+  const hasEndDate = rawEndDate !== undefined;
+  const startDate = hasStartDate ? parseDate(rawStartDate) : existing?.startDate;
+  const endDate = hasEndDate ? parseDate(rawEndDate) : existing?.endDate;
 
   if (required && !startDate) {
     const error = new Error("startDate must be a valid date");

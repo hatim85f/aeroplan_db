@@ -1066,7 +1066,7 @@ Body:
 }
 ```
 
-`entries` can be used instead of `overrides`. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`. If the account does not already have an override document, this append endpoint also requires `startDate` and `endDate`.
+`entries` can be used instead of `overrides`. Date aliases `validFrom`/`validTo`, `fromDate`/`toDate`, and `validityStartDate`/`validityEndDate` are accepted for frontend compatibility, but `startDate` and `endDate` are preferred. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`. If the account does not already have an override document, this append endpoint also requires validity dates.
 
 ### GET /api/foc-overrides
 
