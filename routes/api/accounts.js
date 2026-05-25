@@ -376,6 +376,30 @@ const assignMedicalRepToAccounts = async ({ accountIds, medicalRepId }) => {
   };
 };
 
+const syncAccountSalesTeamLinks = async (accountId, salesTeamIds) => {
+  if (salesTeamIds === undefined) {
+    return;
+  }
+
+  const accountIdString = String(accountId);
+  const uniqueSalesTeamIds = getUniqueObjectIds(salesTeamIds);
+
+  await SalesTeamMember.updateMany(
+    {
+      accountIds: accountIdString,
+      _id: { $nin: uniqueSalesTeamIds },
+    },
+    { $pull: { accountIds: accountIdString } },
+  );
+
+  if (uniqueSalesTeamIds.length > 0) {
+    await SalesTeamMember.updateMany(
+      { _id: { $in: uniqueSalesTeamIds } },
+      { $addToSet: { accountIds: accountIdString } },
+    );
+  }
+};
+
 router.get("/", auth, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -611,6 +635,8 @@ router.post("/bulk", auth, async (req, res, next) => {
         createdBy: req.user.id,
       });
 
+      await syncAccountSalesTeamLinks(account._id, payload.salesTeamIds);
+
       created.push(account);
       buildBatchDuplicateKeys(payload).forEach((key) => batchKeys.add(key));
     }
@@ -760,6 +786,7 @@ router.post("/", auth, async (req, res, next) => {
       ...payload,
       createdBy: req.user.id,
     });
+    await syncAccountSalesTeamLinks(account._id, payload.salesTeamIds);
     const populatedAccount = await populateAccount(Account.findById(account._id));
 
     return res.status(201).json({
@@ -826,6 +853,8 @@ router.patch("/:id", auth, async (req, res, next) => {
       { $set: update },
       { new: true, runValidators: true },
     ));
+
+    await syncAccountSalesTeamLinks(req.params.id, update.salesTeamIds);
 
     return res.status(200).json({
       success: true,
@@ -896,6 +925,8 @@ router.put("/:id", auth, async (req, res, next) => {
         message: "Account not found",
       });
     }
+
+    await syncAccountSalesTeamLinks(req.params.id, payload.salesTeamIds);
 
     return res.status(200).json({
       success: true,

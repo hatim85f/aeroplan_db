@@ -1200,7 +1200,7 @@ Accounts now optionally accept assigned sales team members:
 }
 ```
 
-This field is supported by account create, partial update, full update, and bulk import. When provided, every id must be an active sales team member. Account responses populate `salesTeamIds` with `fullName`, `email`, `phone`, `position`, `status`, `isActive`, and `managerId`.
+This field is supported by account create, partial update, full update, and bulk import. When provided, every id must be an active sales team member. Account responses populate `salesTeamIds` with `fullName`, `email`, `phone`, `position`, `status`, `isActive`, and `managerId`. The backend also syncs the account id into each selected `SalesTeamMember.accountIds`, so sales team member profiles and `GET /api/sales-team/account/:accountId` reflect assignments made from account forms.
 
 ### POST /api/notifications/register-token
 
