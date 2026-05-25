@@ -307,10 +307,8 @@ router.post("/", auth, async (req, res, next) => {
         },
         $set: {
           ...validity,
+          overrides: entries,
           updatedBy: req.user.id,
-        },
-        $push: {
-          overrides: { $each: entries },
         },
       },
       {

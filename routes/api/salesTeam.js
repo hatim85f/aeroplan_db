@@ -208,6 +208,29 @@ const populateSalesTeamMember = (query) => query
   .populate("managerId", "fullName email phone position status isActive")
   .populate("teamManaged", "fullName email phone position status isActive");
 
+const syncSalesTeamMemberAccountLinks = async (memberId, accountIds) => {
+  if (accountIds === undefined) {
+    return;
+  }
+
+  const memberIdString = String(memberId);
+
+  await Account.updateMany(
+    {
+      salesTeamIds: memberIdString,
+      _id: { $nin: accountIds },
+    },
+    { $pull: { salesTeamIds: memberIdString } },
+  );
+
+  if (accountIds.length > 0) {
+    await Account.updateMany(
+      { _id: { $in: accountIds } },
+      { $addToSet: { salesTeamIds: memberIdString } },
+    );
+  }
+};
+
 const buildListQuery = (user, queryParams) => {
   const query = {};
 
@@ -269,6 +292,9 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       createdBy: req.user.id,
       updatedBy: req.user.id,
     });
+
+    await syncSalesTeamMemberAccountLinks(member._id, payload.accountIds);
+
     const populatedMember = await populateSalesTeamMember(SalesTeamMember.findById(member._id));
 
     return res.status(201).json({
@@ -433,6 +459,8 @@ router.patch("/:id", auth, requireManager, async (req, res, next) => {
       { new: true, runValidators: true },
     ));
 
+    await syncSalesTeamMemberAccountLinks(req.params.id, payload.accountIds);
+
     return res.status(200).json({
       success: true,
       message: "Sales team member updated successfully",
@@ -494,6 +522,10 @@ router.patch("/:id/status", auth, requireManager, async (req, res, next) => {
       });
     }
 
+    if (!isActive) {
+      await syncSalesTeamMemberAccountLinks(req.params.id, []);
+    }
+
     return res.status(200).json({
       success: true,
       message: "Sales team member status updated successfully",
@@ -531,6 +563,8 @@ router.delete("/:id", auth, requireManager, async (req, res, next) => {
         message: "Sales team member not found",
       });
     }
+
+    await syncSalesTeamMemberAccountLinks(req.params.id, []);
 
     return res.status(200).json({
       success: true,

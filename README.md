@@ -1066,7 +1066,7 @@ Body:
 }
 ```
 
-`entries` can be used instead of `overrides`. Date aliases `validFrom`/`validTo`, `fromDate`/`toDate`, and `validityStartDate`/`validityEndDate` are accepted for frontend compatibility, but `startDate` and `endDate` are preferred. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`. If the account does not already have an override document, this append endpoint also requires validity dates.
+`entries` can be used instead of `overrides`. Date aliases `validFrom`/`validTo`, `fromDate`/`toDate`, and `validityStartDate`/`validityEndDate` are accepted for frontend compatibility, but `startDate` and `endDate` are preferred. `POST /api/foc-overrides` creates or replaces the full override set for the account. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`. If the account does not already have an override document, this append endpoint also requires validity dates.
 
 ### GET /api/foc-overrides
 
@@ -1200,7 +1200,7 @@ Accounts now optionally accept assigned sales team members:
 }
 ```
 
-This field is supported by account create, partial update, full update, and bulk import. When provided, every id must be an active sales team member. Account responses populate `salesTeamIds` with `fullName`, `email`, `phone`, `position`, `status`, `isActive`, and `managerId`. The backend also syncs the account id into each selected `SalesTeamMember.accountIds`, so sales team member profiles and `GET /api/sales-team/account/:accountId` reflect assignments made from account forms.
+This field is supported by account create, partial update, full update, and bulk import. When provided, every id must be an active sales team member. Account responses populate `salesTeamIds` with `fullName`, `email`, `phone`, `position`, `status`, `isActive`, and `managerId`. The backend also syncs the account id into each selected `SalesTeamMember.accountIds`, so sales team member profiles and `GET /api/sales-team/account/:accountId` reflect assignments made from account forms. Editing `accountIds` on a sales team member also syncs back to each account's `salesTeamIds`.
 
 ### POST /api/notifications/register-token
 
