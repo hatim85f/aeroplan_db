@@ -19,25 +19,9 @@ const focOverrideEntrySchema = new Schema(
       type: String,
       trim: true,
     },
-    startDate: {
-      type: Date,
-      required: true,
-    },
-    endDate: {
-      type: Date,
-      required: true,
-    },
   },
   { timestamps: true },
 );
-
-focOverrideEntrySchema.path("endDate").validate(function validateEndDate(value) {
-  if (!value || !this.startDate) {
-    return true;
-  }
-
-  return value >= this.startDate;
-}, "endDate must be on or after startDate");
 
 const accountFocOverrideSchema = new Schema(
   {
@@ -46,6 +30,16 @@ const accountFocOverrideSchema = new Schema(
       ref: "Account",
       required: true,
       unique: true,
+      index: true,
+    },
+    startDate: {
+      type: Date,
+      required: true,
+      index: true,
+    },
+    endDate: {
+      type: Date,
+      required: true,
       index: true,
     },
     overrides: {
@@ -64,7 +58,15 @@ const accountFocOverrideSchema = new Schema(
   { timestamps: true },
 );
 
+accountFocOverrideSchema.path("endDate").validate(function validateEndDate(value) {
+  if (!value || !this.startDate) {
+    return true;
+  }
+
+  return value >= this.startDate;
+}, "endDate must be on or after startDate");
+
 accountFocOverrideSchema.index({ accountId: 1, "overrides.productId": 1 });
-accountFocOverrideSchema.index({ "overrides.startDate": 1, "overrides.endDate": 1 });
+accountFocOverrideSchema.index({ startDate: 1, endDate: 1 });
 
 module.exports = mongoose.model("AccountFocOverride", accountFocOverrideSchema);

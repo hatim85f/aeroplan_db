@@ -30,6 +30,55 @@ const parseDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const normalizeValidity = (body = {}, { existing, required = true } = {}) => {
+  const hasStartDate = body.startDate !== undefined;
+  const hasEndDate = body.endDate !== undefined;
+  const startDate = hasStartDate ? parseDate(body.startDate) : existing?.startDate;
+  const endDate = hasEndDate ? parseDate(body.endDate) : existing?.endDate;
+
+  if (required && !startDate) {
+    const error = new Error("startDate must be a valid date");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (required && !endDate) {
+    const error = new Error("endDate must be a valid date");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (hasStartDate && !startDate) {
+    const error = new Error("startDate must be a valid date");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (hasEndDate && !endDate) {
+    const error = new Error("endDate must be a valid date");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (startDate && endDate && endDate < startDate) {
+    const error = new Error("endDate must be on or after startDate");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const validity = {};
+
+  if (hasStartDate || required) {
+    validity.startDate = startDate;
+  }
+
+  if (hasEndDate || required) {
+    validity.endDate = endDate;
+  }
+
+  return validity;
+};
+
 const normalizeEntry = (entry = {}, index = 0) => {
   const productId = entry.productId;
 
@@ -47,33 +96,10 @@ const normalizeEntry = (entry = {}, index = 0) => {
     throw error;
   }
 
-  const startDate = parseDate(entry.startDate);
-  const endDate = parseDate(entry.endDate);
-
-  if (!startDate) {
-    const error = new Error(`overrides.${index}.startDate must be a valid date`);
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (!endDate) {
-    const error = new Error(`overrides.${index}.endDate must be a valid date`);
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (endDate < startDate) {
-    const error = new Error(`overrides.${index}.endDate must be on or after startDate`);
-    error.statusCode = 400;
-    throw error;
-  }
-
   return {
     productId,
     overridePercentage,
     notes: entry.notes,
-    startDate,
-    endDate,
   };
 };
 
@@ -215,6 +241,7 @@ router.post("/", auth, async (req, res, next) => {
   try {
     const accountId = req.body.accountId;
     const entries = normalizeEntries(req.body);
+    const validity = normalizeValidity(req.body);
 
     await validateAccountExists(accountId);
     await validateProductsExist(entries);
@@ -227,6 +254,7 @@ router.post("/", auth, async (req, res, next) => {
           createdBy: req.user.id,
         },
         $set: {
+          ...validity,
           updatedBy: req.user.id,
         },
         $push: {
@@ -258,6 +286,9 @@ router.post("/:accountId/entries", auth, async (req, res, next) => {
     await validateAccountExists(req.params.accountId);
     await validateProductsExist(entries);
 
+    const existing = await AccountFocOverride.findOne({ accountId: req.params.accountId });
+    const validity = normalizeValidity(req.body, { existing, required: !existing });
+
     const override = await AccountFocOverride.findOneAndUpdate(
       { accountId: req.params.accountId },
       {
@@ -266,6 +297,7 @@ router.post("/:accountId/entries", auth, async (req, res, next) => {
           createdBy: req.user.id,
         },
         $set: {
+          ...validity,
           updatedBy: req.user.id,
         },
         $push: {
@@ -293,6 +325,7 @@ router.post("/:accountId/entries", auth, async (req, res, next) => {
 router.patch("/:accountId", auth, async (req, res, next) => {
   try {
     const entries = normalizeEntries(req.body);
+    const validity = normalizeValidity(req.body);
 
     await validateAccountExists(req.params.accountId);
     await validateProductsExist(entries);
@@ -301,6 +334,7 @@ router.patch("/:accountId", auth, async (req, res, next) => {
       { accountId: req.params.accountId },
       {
         $set: {
+          ...validity,
           overrides: entries,
           updatedBy: req.user.id,
         },
@@ -367,8 +401,6 @@ router.patch("/:accountId/entries/:entryId", auth, async (req, res, next) => {
           ? req.body.overridePercentage
           : entry.overridePercentage,
         notes: req.body.notes !== undefined ? req.body.notes : entry.notes,
-        startDate: req.body.startDate !== undefined ? req.body.startDate : entry.startDate,
-        endDate: req.body.endDate !== undefined ? req.body.endDate : entry.endDate,
       },
       0,
     );

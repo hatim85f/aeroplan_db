@@ -1036,7 +1036,7 @@ Authorization: Bearer <token>
 
 ### POST /api/foc-overrides
 
-Creates account-level FOC override entries. One account can have many entries, each linked to a product with its own override percentage, optional notes, and validity dates.
+Creates account-level FOC override entries. One account can have many entries, each linked to a product with its own override percentage and optional notes. The validity dates apply to the whole account override set.
 
 Headers:
 
@@ -1050,25 +1050,23 @@ Body:
 ```json
 {
   "accountId": "account-id",
+  "startDate": "2026-06-01T00:00:00.000Z",
+  "endDate": "2026-06-30T23:59:59.999Z",
   "overrides": [
     {
       "productId": "product-id-1",
       "overridePercentage": 12.5,
-      "notes": "Ramadan campaign override",
-      "startDate": "2026-06-01T00:00:00.000Z",
-      "endDate": "2026-06-30T23:59:59.999Z"
+      "notes": "Ramadan campaign override"
     },
     {
       "productId": "product-id-2",
-      "overridePercentage": 8,
-      "startDate": "2026-07-01T00:00:00.000Z",
-      "endDate": "2026-07-31T23:59:59.999Z"
+      "overridePercentage": 8
     }
   ]
 }
 ```
 
-`entries` can be used instead of `overrides`. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`.
+`entries` can be used instead of `overrides`. To append entries when the account id is already in the URL, use `POST /api/foc-overrides/:accountId/entries`. If the account does not already have an override document, this append endpoint also requires `startDate` and `endDate`.
 
 ### GET /api/foc-overrides
 
@@ -1080,11 +1078,11 @@ Returns all FOC override entries for one account.
 
 ### PATCH /api/foc-overrides/:accountId
 
-Replaces the full override entry array for one account. The request body uses the same `overrides` or `entries` array shape as create.
+Replaces the full validity window and override entry array for one account. The request body uses the same `startDate`, `endDate`, and `overrides` or `entries` array shape as create.
 
 ### PATCH /api/foc-overrides/:accountId/entries/:entryId
 
-Updates one override entry. Any of `productId`, `overridePercentage`, `notes`, `startDate`, or `endDate` can be sent.
+Updates one override entry. Any of `productId`, `overridePercentage`, or `notes` can be sent.
 
 ### DELETE /api/foc-overrides/:accountId
 
