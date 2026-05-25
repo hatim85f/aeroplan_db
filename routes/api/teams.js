@@ -72,6 +72,35 @@ const canViewTeam = (user, team) => {
   return (team.members || []).some((member) => String(member._id || member) === String(user._id));
 };
 
+const getJoinDateTime = (member) => {
+  if (!member?.joinDate) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  const joinDate = new Date(member.joinDate);
+  const time = joinDate.getTime();
+
+  return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
+};
+
+const sortMembersByJoinDate = (members = []) => [...members].sort((firstMember, secondMember) => {
+  const joinDateDifference = getJoinDateTime(firstMember) - getJoinDateTime(secondMember);
+
+  if (joinDateDifference !== 0) {
+    return joinDateDifference;
+  }
+
+  return String(firstMember.fullName || "").localeCompare(String(secondMember.fullName || ""));
+});
+
+const sortTeamMembersByJoinDate = (team) => {
+  if (team?.members) {
+    team.members = sortMembersByJoinDate(team.members);
+  }
+
+  return team;
+};
+
 const findTeamForUser = async (teamId, user) => {
   const team = await Team.findById(teamId)
     .populate("managerId", "fullName email appId role profilePicture position territory area")
@@ -93,7 +122,7 @@ const findTeamForUser = async (teamId, user) => {
     throw error;
   }
 
-  return team;
+  return sortTeamMembersByJoinDate(team);
 };
 
 const resolveLine = async (lineId, lineName) => {
@@ -233,10 +262,10 @@ const syncTeamMembersFromLines = async (team) => {
 
   const syncedTeam = await Team.findById(team._id)
     .populate("managerId", "fullName email appId role")
-    .populate("members", "fullName email appId role status lineId");
+    .populate("members", "fullName email appId role status lineId joinDate");
 
   return {
-    team: syncedTeam,
+    team: sortTeamMembersByJoinDate(syncedTeam),
     autoAddedMembers: userIds.length,
     skippedAssignedMembers: assignedToOtherTeamCount,
   };
@@ -378,7 +407,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
     return res.status(201).json({
       success: true,
       message: "Team created successfully",
-      data: populatedTeam,
+      data: sortTeamMembersByJoinDate(populatedTeam),
       meta: {
         autoAddedMembers: syncResult.autoAddedMembers,
         skippedAssignedMembers: syncResult.skippedAssignedMembers,
@@ -402,13 +431,13 @@ router.get("/my-teams", auth, async (req, res, next) => {
 
     const teams = await Team.find(buildTeamQuery(user, req.query))
       .populate("managerId", "fullName email appId role profilePicture")
-      .populate("members", "fullName email appId role status")
+      .populate("members", "fullName email appId role status joinDate")
       .sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
       message: "Teams fetched successfully",
-      data: teams,
+      data: teams.map(sortTeamMembersByJoinDate),
     });
   } catch (error) {
     return next(error);
@@ -430,8 +459,9 @@ router.get("/dashboard", auth, async (req, res, next) => {
       .populate("managerId", "fullName email appId role profilePicture")
       .populate(
         "members",
-        "fullName email appId role status yearlyTargetValue yearlyTargetUnits performanceSnapshot forecastSnapshot",
+        "fullName email appId role status yearlyTargetValue yearlyTargetUnits performanceSnapshot forecastSnapshot joinDate",
       );
+    teams.forEach(sortTeamMembersByJoinDate);
     const memberIds = teams.flatMap((team) => team.members.map((member) => member._id));
     const pendingInvitations = await TeamInvitation.countDocuments({
       teamId: { $in: teams.map((team) => team._id) },
