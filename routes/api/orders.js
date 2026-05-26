@@ -59,20 +59,13 @@ const parseDate = (value, fieldName = "date") => {
 
 const getCurrentUser = async (req) => User.findById(req.user.id);
 
-const ensureOrderActor = async (req, res, next) => {
+const loadOrderActor = async (req, res, next) => {
   const user = await getCurrentUser(req);
 
   if (!user) {
     return res.status(404).json({
       success: false,
       message: "User not found",
-    });
-  }
-
-  if (!["representative", "manager", "senior_manager", "admin"].includes(user.role)) {
-    return res.status(403).json({
-      success: false,
-      message: "You are not allowed to create orders",
     });
   }
 
@@ -429,7 +422,7 @@ const getOrderForAccess = async (orderId, res) => {
   return order;
 };
 
-router.get("/init-data", auth, ensureOrderActor, async (req, res, next) => {
+router.get("/init-data", auth, loadOrderActor, async (req, res, next) => {
   try {
     if (!req.query.accountId || !isValidObjectId(req.query.accountId)) {
       return res.status(400).json({
@@ -484,7 +477,7 @@ router.get("/init-data", auth, ensureOrderActor, async (req, res, next) => {
   }
 });
 
-router.post("/", auth, ensureOrderActor, async (req, res, next) => {
+router.post("/", auth, loadOrderActor, async (req, res, next) => {
   try {
     if (!req.body.accountId || !isValidObjectId(req.body.accountId)) {
       return res.status(400).json({
@@ -590,7 +583,7 @@ router.post("/", auth, ensureOrderActor, async (req, res, next) => {
   }
 });
 
-router.get("/", auth, ensureOrderActor, async (req, res, next) => {
+router.get("/", auth, loadOrderActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
@@ -618,7 +611,7 @@ router.get("/", auth, ensureOrderActor, async (req, res, next) => {
   }
 });
 
-router.get("/:id", auth, ensureOrderActor, async (req, res, next) => {
+router.get("/:id", auth, loadOrderActor, async (req, res, next) => {
   try {
     const order = await getOrderForAccess(req.params.id, res);
 
@@ -643,7 +636,7 @@ router.get("/:id", auth, ensureOrderActor, async (req, res, next) => {
   }
 });
 
-router.patch("/:id", auth, ensureOrderActor, async (req, res, next) => {
+router.patch("/:id", auth, loadOrderActor, async (req, res, next) => {
   try {
     const order = await getOrderForAccess(req.params.id, res);
 
@@ -731,7 +724,7 @@ router.patch("/:id", auth, ensureOrderActor, async (req, res, next) => {
   }
 });
 
-router.patch("/:id/status", auth, ensureOrderActor, async (req, res, next) => {
+router.patch("/:id/status", auth, loadOrderActor, async (req, res, next) => {
   try {
     if (!isManagerRole(req.currentUser.role)) {
       return res.status(403).json({
@@ -781,7 +774,7 @@ router.patch("/:id/status", auth, ensureOrderActor, async (req, res, next) => {
   }
 });
 
-router.post("/:id/mark-email-sent", auth, ensureOrderActor, async (req, res, next) => {
+router.post("/:id/mark-email-sent", auth, loadOrderActor, async (req, res, next) => {
   try {
     const order = await getOrderForAccess(req.params.id, res);
 
@@ -816,7 +809,7 @@ router.post("/:id/mark-email-sent", auth, ensureOrderActor, async (req, res, nex
   }
 });
 
-router.delete("/:id", auth, ensureOrderActor, async (req, res, next) => {
+router.delete("/:id", auth, loadOrderActor, async (req, res, next) => {
   try {
     if (!isManagerRole(req.currentUser.role)) {
       return res.status(403).json({
