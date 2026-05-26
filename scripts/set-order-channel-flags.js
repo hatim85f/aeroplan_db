@@ -15,7 +15,7 @@ const ORDER_CHANNEL_DEFAULTS = [
     focEnabled: false,
   },
   {
-    keys: ["institutional"],
+    keys: ["institution", "institutional"],
     allowRepOrders: false,
     focEnabled: false,
   },
