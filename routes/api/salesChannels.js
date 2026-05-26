@@ -47,6 +47,7 @@ const normalizeSalesChannelPayload = (body, { partial = false } = {}) => {
     "channelKey",
     "description",
     "focEnabled",
+    "allowRepOrders",
     "status",
     "isActive",
     "organizationId",
@@ -74,6 +75,10 @@ const normalizeSalesChannelPayload = (body, { partial = false } = {}) => {
 
   if (payload.focEnabled !== undefined) {
     payload.focEnabled = normalizeBoolean(payload.focEnabled);
+  }
+
+  if (payload.allowRepOrders !== undefined) {
+    payload.allowRepOrders = normalizeBoolean(payload.allowRepOrders);
   }
 
   return payload;

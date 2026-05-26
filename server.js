@@ -17,6 +17,7 @@ const productRoutes = require('./routes/api/products');
 const focOverrideRoutes = require('./routes/api/focOverrides');
 const salesChannelRoutes = require('./routes/api/salesChannels');
 const salesTeamRoutes = require('./routes/api/salesTeam');
+const orderRoutes = require('./routes/api/orders');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 
 const app = express();
@@ -64,6 +65,7 @@ app.use('/api/sales-channels', salesChannelRoutes);
 app.use('/api/sales-team', salesTeamRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/foc-overrides', focOverrideRoutes);
+app.use('/api/orders', orderRoutes);
 app.use('/products', productRoutes);
 
 app.use((req, res) => {

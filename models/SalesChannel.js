@@ -31,6 +31,11 @@ const salesChannelSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    allowRepOrders: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     isActive: {
       type: Boolean,
       default: true,
