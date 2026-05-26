@@ -147,6 +147,8 @@ const buildUserProfile = async (user) => {
   const manager = profile.managerId;
 
   profile.managerName = manager ? manager.fullName || manager.email || "" : null;
+  profile.managerEmail = manager ? manager.email || null : null;
+  profile.managerAppId = manager ? manager.appId || null : null;
   delete profile.managerId;
 
   if (isManagerRole(profile.role)) {
