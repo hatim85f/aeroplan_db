@@ -174,6 +174,22 @@ const findChannelPricing = (product, channelId) => (product.channelPricing || []
   (pricing) => String(pricing.channelId) === String(channelId) && pricing.isAvailable,
 );
 
+const normalizeManualFocPercentage = (item, index) => {
+  if (item.focPercentage === undefined || item.focPercentage === null || item.focPercentage === "") {
+    return undefined;
+  }
+
+  const focPercentage = Number(item.focPercentage);
+
+  if (!Number.isFinite(focPercentage) || focPercentage < 0) {
+    const error = new Error(`items.${index}.focPercentage must be a number greater than or equal to 0`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return focPercentage;
+};
+
 const getFocOverrideForItem = (override, productId, orderDate) => {
   if (!override) {
     return {
@@ -259,7 +275,12 @@ const buildOrderItems = async ({ rawItems, accountId, channelId, orderDate }) =>
     let focPercentage = 0;
     let focOverrideId;
 
-    if (overrideResult.validEntry) {
+    const manualFocPercentage = normalizeManualFocPercentage(item, index);
+
+    if (manualFocPercentage !== undefined) {
+      focSource = "manual";
+      focPercentage = manualFocPercentage;
+    } else if (overrideResult.validEntry) {
       focSource = "override";
       focPercentage = Number(overrideResult.validEntry.overridePercentage) || 0;
       focOverrideId = accountOverride._id;
@@ -673,6 +694,7 @@ router.patch("/:id", auth, loadOrderActor, async (req, res, next) => {
         rawItems: order.items.map((item) => ({
           productId: item.productId,
           quantity: item.quantity,
+          focPercentage: item.focSource === "manual" ? item.focPercentage : undefined,
         })),
         accountId: order.account.accountId,
         channelId: order.channelId,

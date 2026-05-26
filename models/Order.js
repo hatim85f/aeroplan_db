@@ -63,7 +63,7 @@ const orderItemSchema = new Schema(
     },
     focSource: {
       type: String,
-      enum: ["override", "default", "none"],
+      enum: ["manual", "override", "default", "none"],
       default: "none",
     },
     focOverrideId: {
