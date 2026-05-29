@@ -27,6 +27,16 @@ const itemSchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
+    targetValueBasis: {
+      type: String,
+      enum: ['cifUsd', 'wholesaleAed', 'retailAed'],
+      default: 'cifUsd'
+    },
+    targetCurrency: {
+      type: String,
+      enum: ['USD', 'AED'],
+      default: 'USD'
+    },
     isActive: {
       type: Boolean,
       default: true
