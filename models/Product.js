@@ -51,6 +51,16 @@ const channelPricingSchema = new Schema(
       type: String,
       trim: true,
     },
+    targetValueBasis: {
+      type: String,
+      enum: ["cifUsd", "wholesaleAed", "retailAed"],
+      default: "cifUsd",
+    },
+    targetCurrency: {
+      type: String,
+      enum: ["USD", "AED"],
+      default: "USD",
+    },
   },
   { _id: false },
 );

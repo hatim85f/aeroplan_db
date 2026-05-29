@@ -36,6 +36,16 @@ const salesChannelSchema = new Schema(
       default: false,
       index: true,
     },
+    defaultTargetValueBasis: {
+      type: String,
+      enum: ["cifUsd", "wholesaleAed", "retailAed"],
+      default: "cifUsd",
+    },
+    defaultTargetCurrency: {
+      type: String,
+      enum: ["USD", "AED"],
+      default: "USD",
+    },
     isActive: {
       type: Boolean,
       default: true,

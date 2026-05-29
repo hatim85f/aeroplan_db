@@ -7,6 +7,9 @@ const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
 
+const TARGET_VALUE_BASES = ["cifUsd", "wholesaleAed", "retailAed"];
+const TARGET_CURRENCIES = ["USD", "AED"];
+
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
 const normalizeBoolean = (value) => {
@@ -18,6 +21,22 @@ const normalizeBoolean = (value) => {
 };
 
 const getCurrentUser = async (req) => User.findById(req.user.id);
+
+const normalizeTargetValueBasis = (value, defaultValue = "cifUsd") => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+
+  return String(value).trim();
+};
+
+const normalizeTargetCurrency = (value, defaultValue = "USD") => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+
+  return String(value).trim().toUpperCase();
+};
 
 const requireManager = async (req, res, next) => {
   const user = await getCurrentUser(req);
@@ -48,6 +67,8 @@ const normalizeSalesChannelPayload = (body, { partial = false } = {}) => {
     "description",
     "focEnabled",
     "allowRepOrders",
+    "defaultTargetValueBasis",
+    "defaultTargetCurrency",
     "status",
     "isActive",
     "organizationId",
@@ -81,6 +102,16 @@ const normalizeSalesChannelPayload = (body, { partial = false } = {}) => {
     payload.allowRepOrders = normalizeBoolean(payload.allowRepOrders);
   }
 
+  if (payload.defaultTargetValueBasis !== undefined) {
+    payload.defaultTargetValueBasis = normalizeTargetValueBasis(payload.defaultTargetValueBasis);
+  }
+
+  if (payload.defaultTargetCurrency !== undefined) {
+    payload.defaultTargetCurrency = normalizeTargetCurrency(payload.defaultTargetCurrency);
+  } else if (payload.defaultTargetValueBasis !== undefined) {
+    payload.defaultTargetCurrency = payload.defaultTargetValueBasis === "cifUsd" ? "USD" : "AED";
+  }
+
   return payload;
 };
 
@@ -103,6 +134,20 @@ const validateSalesChannelPayload = (payload, { partial = false } = {}) => {
 
   if (payload.status !== undefined && !["active", "inactive"].includes(payload.status)) {
     return "status must be active or inactive";
+  }
+
+  if (
+    payload.defaultTargetValueBasis !== undefined
+    && !TARGET_VALUE_BASES.includes(payload.defaultTargetValueBasis)
+  ) {
+    return "defaultTargetValueBasis must be cifUsd, wholesaleAed, or retailAed";
+  }
+
+  if (
+    payload.defaultTargetCurrency !== undefined
+    && !TARGET_CURRENCIES.includes(payload.defaultTargetCurrency)
+  ) {
+    return "defaultTargetCurrency must be USD or AED";
   }
 
   if (payload.organizationId !== undefined && payload.organizationId && !isValidObjectId(payload.organizationId)) {

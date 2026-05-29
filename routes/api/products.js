@@ -9,6 +9,9 @@ const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
 
+const TARGET_VALUE_BASES = ["cifUsd", "wholesaleAed", "retailAed"];
+const TARGET_CURRENCIES = ["USD", "AED"];
+
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
 const normalizeLineId = (lineId) => String(lineId || "").trim().toUpperCase();
@@ -90,6 +93,26 @@ const normalizeBoolean = (value, defaultValue = false) => {
   return String(value).trim().toLowerCase() === "true";
 };
 
+const normalizeTargetValueBasis = (value, defaultValue = "cifUsd") => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+
+  return String(value).trim();
+};
+
+const getDefaultTargetCurrency = (targetValueBasis) => (
+  targetValueBasis === "cifUsd" ? "USD" : "AED"
+);
+
+const normalizeTargetCurrency = (value, defaultValue = "USD") => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+
+  return String(value).trim().toUpperCase();
+};
+
 const normalizeChannelPricing = async (channelPricing, { partial = false, context = {} } = {}) => {
   if (channelPricing === undefined) {
     if (partial) {
@@ -166,6 +189,16 @@ const normalizeChannelPricing = async (channelPricing, { partial = false, contex
     const defaultFocPercentage = salesChannel.focEnabled
       ? normalizeNumber(item.defaultFocPercentage)
       : 0;
+    const targetValueBasis = normalizeTargetValueBasis(
+      item.targetValueBasis,
+      salesChannel.defaultTargetValueBasis || "cifUsd",
+    );
+    const targetCurrency = normalizeTargetCurrency(
+      item.targetCurrency,
+      item.targetValueBasis
+        ? getDefaultTargetCurrency(targetValueBasis)
+        : salesChannel.defaultTargetCurrency || getDefaultTargetCurrency(targetValueBasis),
+    );
 
     normalized.push({
       channelId: salesChannel._id,
@@ -178,6 +211,8 @@ const normalizeChannelPricing = async (channelPricing, { partial = false, contex
       focEnabled: salesChannel.focEnabled,
       defaultFocPercentage,
       focNotes: item.focNotes,
+      targetValueBasis,
+      targetCurrency,
     });
   }
 
@@ -200,6 +235,14 @@ const validateChannelPricingNumbers = (channelPricing = []) => {
       !Number.isFinite(item.defaultFocPercentage)
     ) {
       return `channelPricing.${index}.defaultFocPercentage must be a number`;
+    }
+
+    if (!TARGET_VALUE_BASES.includes(item.targetValueBasis)) {
+      return `channelPricing.${index}.targetValueBasis must be cifUsd, wholesaleAed, or retailAed`;
+    }
+
+    if (!TARGET_CURRENCIES.includes(item.targetCurrency)) {
+      return `channelPricing.${index}.targetCurrency must be USD or AED`;
     }
   }
 
@@ -404,6 +447,8 @@ const normalizeBulkProductInput = (input = {}) => {
         retailAed: getFirstDefined(input, ["retailAed", "Retail AED"]),
         defaultFocPercentage: getFirstDefined(input, ["defaultFocPercentage", "Default FOC %"]),
         focNotes: getFirstDefined(input, ["focNotes", "FOC Notes"]),
+        targetValueBasis: getFirstDefined(input, ["targetValueBasis", "Target Value Basis"]),
+        targetCurrency: getFirstDefined(input, ["targetCurrency", "Target Currency"]),
       },
     ];
   }
