@@ -312,6 +312,67 @@ const formatBulkProductFailure = ({ index, product, reason, duplicateProductId }
   return failure;
 };
 
+const normalizeProductIds = (body = {}) => {
+  const rawProductIds = [];
+
+  if (body.productId !== undefined) {
+    rawProductIds.push(body.productId);
+  }
+
+  if (Array.isArray(body.productIds)) {
+    rawProductIds.push(...body.productIds);
+  }
+
+  if (Array.isArray(body.products)) {
+    rawProductIds.push(...body.products.map((product) => (
+      typeof product === "object" && product !== null ? product.productId || product._id : product
+    )));
+  }
+
+  const productIds = [...new Set(rawProductIds.map((productId) => String(productId || "").trim()).filter(Boolean))];
+
+  if (productIds.length === 0) {
+    const error = new Error("productIds must contain at least one product id");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const invalidProductId = productIds.find((productId) => !isValidObjectId(productId));
+
+  if (invalidProductId) {
+    const error = new Error(`Invalid productId: ${invalidProductId}`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return productIds;
+};
+
+const buildAssignedProductSnapshot = (product) => ({
+  productName: product.productName,
+  productNickname: product.productNickname,
+  lineId: product.lineId,
+  lineName: product.lineName,
+});
+
+const syncUserAssignedProductSnapshots = async (products = []) => {
+  for (const product of products) {
+    await User.updateMany(
+      { "assignedProducts.productId": product._id },
+      {
+        $set: {
+          "assignedProducts.$[assignment].productSnapshot": buildAssignedProductSnapshot(product),
+        },
+      },
+      {
+        arrayFilters: [
+          { "assignment.productId": product._id },
+        ],
+      },
+    );
+  }
+};
+
 const getFirstDefined = (input, keys) => {
   for (const key of keys) {
     if (input?.[key] !== undefined) {
@@ -675,6 +736,44 @@ router.post("/bulk", auth, requireManager, async (req, res, next) => {
   }
 });
 
+router.patch("/assign-line", auth, requireManager, async (req, res, next) => {
+  try {
+    const productIds = normalizeProductIds(req.body);
+    const line = await resolveLine(req.body.lineId, req.body.lineName);
+    const result = await Product.updateMany(
+      { _id: { $in: productIds } },
+      {
+        $set: {
+          lineId: line.lineId,
+          lineName: line.lineName,
+        },
+      },
+      { runValidators: true },
+    );
+    const products = await Product.find({ _id: { $in: productIds } }).sort({ productName: 1 });
+
+    await syncUserAssignedProductSnapshots(products);
+
+    const foundProductIds = new Set(products.map((product) => String(product._id)));
+    const missingProductIds = productIds.filter((productId) => !foundProductIds.has(productId));
+
+    return res.status(200).json({
+      success: true,
+      message: "Products assigned to line successfully",
+      data: {
+        line,
+        products,
+        requestedCount: productIds.length,
+        matchedCount: result.matchedCount,
+        modifiedCount: result.modifiedCount,
+        missingProductIds,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/:id", auth, async (req, res, next) => {
   try {
     if (!isValidObjectId(req.params.id)) {
@@ -773,6 +872,8 @@ router.patch("/:id", auth, requireManager, async (req, res, next) => {
         message: "Product not found",
       });
     }
+
+    await syncUserAssignedProductSnapshots([product]);
 
     return res.status(200).json({
       success: true,

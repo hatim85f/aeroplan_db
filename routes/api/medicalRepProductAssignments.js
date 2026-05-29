@@ -1,13 +1,14 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
-const MedicalRepProductAssignment = require("../../models/MedicalRepProductAssignment");
 const Product = require("../../models/Product");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
 
 const router = express.Router();
+
+const FAR_FUTURE = new Date("9999-12-31T00:00:00.000Z");
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -98,15 +99,14 @@ const getAccessibleRepIds = async (user) => {
       { _id: user._id },
       { path: user._id },
     ],
+    role: "representative",
   }).select("_id").lean();
 
   return scopedUsers.map((scopedUser) => String(scopedUser._id));
 };
 
 const ensureCanAccessRep = async (actor, medicalRepId) => {
-  const rep = await User.findById(medicalRepId).select(
-    "_id fullName userName email appId role status lineId territory area path",
-  );
+  const rep = await User.findById(medicalRepId);
 
   if (!rep) {
     const error = new Error("Medical rep not found");
@@ -211,79 +211,24 @@ const getUtcYearRange = (yearValue) => {
   };
 };
 
-const assertNoOverlappingAssignment = async ({
-  medicalRepId,
-  productId,
-  startDate,
-  endDate,
-  excludeId,
-}) => {
-  const query = {
-    medicalRepId,
-    productId,
-    status: "active",
-    isActive: true,
-    startDate: { $lte: endDate || new Date("9999-12-31T00:00:00.000Z") },
-    $or: [
-      { endDate: null },
-      { endDate: { $exists: false } },
-      { endDate: { $gte: startDate } },
-    ],
-  };
+const assignmentOverlapsRange = (assignment, rangeStart, rangeEnd) => {
+  const assignmentStart = assignment.startDate || new Date(0);
+  const assignmentEnd = assignment.endDate || FAR_FUTURE;
 
-  if (excludeId) {
-    query._id = { $ne: excludeId };
-  }
-
-  const existingAssignment = await MedicalRepProductAssignment.findOne(query).select("_id").lean();
-
-  if (existingAssignment) {
-    const error = new Error("This medical rep already has an active assignment for this product in the selected date range");
-    error.statusCode = 409;
-    throw error;
-  }
+  return assignmentStart < rangeEnd && assignmentEnd >= rangeStart;
 };
 
-const populateAssignment = (query) => query
-  .populate("medicalRepId", "fullName userName email appId role status lineId territory area path")
-  .populate("productId", "productName productNickname lineId lineName status isActive")
-  .populate("assignedBy", "fullName email appId role")
-  .populate("updatedBy", "fullName email appId role");
-
-const buildListQuery = async (user, queryParams) => {
-  const query = {};
-  const accessibleRepIds = await getAccessibleRepIds(user);
-
-  if (accessibleRepIds) {
-    query.medicalRepId = { $in: accessibleRepIds };
-  }
-
-  if (queryParams.medicalRepId) {
-    if (!isValidObjectId(queryParams.medicalRepId)) {
-      const error = new Error("medicalRepId must be a valid MongoDB ObjectId");
-      error.statusCode = 400;
-      throw error;
-    }
-
-    if (accessibleRepIds && !accessibleRepIds.includes(String(queryParams.medicalRepId))) {
-      query.medicalRepId = null;
-    } else {
-      query.medicalRepId = queryParams.medicalRepId;
-    }
-  }
-
-  if (queryParams.productId) {
-    if (!isValidObjectId(queryParams.productId)) {
-      const error = new Error("productId must be a valid MongoDB ObjectId");
-      error.statusCode = 400;
-      throw error;
-    }
-
-    query.productId = queryParams.productId;
+const assignmentMatchesFilters = (assignment, queryParams = {}) => {
+  if (queryParams.productId && String(assignment.productId) !== String(queryParams.productId)) {
+    return false;
   }
 
   if (queryParams.lineId) {
-    query["productSnapshot.lineId"] = String(queryParams.lineId).trim().toUpperCase();
+    const lineId = String(queryParams.lineId).trim().toUpperCase();
+
+    if (String(assignment.productSnapshot?.lineId || "").toUpperCase() !== lineId) {
+      return false;
+    }
   }
 
   if (queryParams.status) {
@@ -295,35 +240,129 @@ const buildListQuery = async (user, queryParams) => {
       throw error;
     }
 
-    query.status = status;
+    if (assignment.status !== status) {
+      return false;
+    }
   }
 
-  if (queryParams.isActive !== undefined) {
-    query.isActive = normalizeBoolean(queryParams.isActive);
+  if (queryParams.isActive !== undefined && assignment.isActive !== normalizeBoolean(queryParams.isActive)) {
+    return false;
   }
 
   if (queryParams.year) {
     const { yearStart, nextYearStart } = getUtcYearRange(queryParams.year);
+    return assignmentOverlapsRange(assignment, yearStart, nextYearStart);
+  }
 
-    query.startDate = { $lt: nextYearStart };
-    query.$or = [
-      { endDate: null },
-      { endDate: { $exists: false } },
-      { endDate: { $gte: yearStart } },
-    ];
-  } else if (queryParams.activeOn) {
+  if (queryParams.activeOn) {
     const activeOn = parseDate(queryParams.activeOn, "activeOn");
-    query.status = "active";
-    query.isActive = true;
-    query.startDate = { $lte: activeOn };
-    query.$or = [
-      { endDate: null },
-      { endDate: { $exists: false } },
-      { endDate: { $gte: activeOn } },
-    ];
+    const nextDay = new Date(activeOn);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+
+    return assignment.status === "active"
+      && assignment.isActive
+      && assignmentOverlapsRange(assignment, activeOn, nextDay);
+  }
+
+  return true;
+};
+
+const hasOverlappingAssignment = ({ rep, productId, startDate, endDate, excludeAssignmentId }) => {
+  const rangeEnd = endDate || FAR_FUTURE;
+
+  return (rep.assignedProducts || []).some((assignment) => {
+    if (excludeAssignmentId && String(assignment._id) === String(excludeAssignmentId)) {
+      return false;
+    }
+
+    return String(assignment.productId) === String(productId)
+      && assignment.status === "active"
+      && assignment.isActive
+      && assignmentOverlapsRange(assignment, startDate, rangeEnd);
+  });
+};
+
+const serializeAssignment = (rep, assignment) => ({
+  _id: assignment._id,
+  medicalRepId: {
+    _id: rep._id,
+    ...buildRepSnapshot(rep),
+    role: rep.role,
+    status: rep.status,
+  },
+  medicalRepSnapshot: buildRepSnapshot(rep),
+  productId: {
+    _id: assignment.productId,
+    ...(assignment.productSnapshot || {}),
+  },
+  productSnapshot: assignment.productSnapshot || {},
+  startDate: assignment.startDate,
+  endDate: assignment.endDate,
+  status: assignment.status,
+  isActive: assignment.isActive,
+  notes: assignment.notes,
+  assignedBy: assignment.assignedBy,
+  updatedBy: assignment.updatedBy,
+  assignedAt: assignment.assignedAt,
+  createdAt: assignment.createdAt,
+  updatedAt: assignment.updatedAt,
+});
+
+const getFilteredAssignmentsForRep = (rep, queryParams) => (rep.assignedProducts || [])
+  .filter((assignment) => assignmentMatchesFilters(assignment, queryParams))
+  .sort((left, right) => {
+    const rightDate = right.startDate ? right.startDate.getTime() : 0;
+    const leftDate = left.startDate ? left.startDate.getTime() : 0;
+
+    return rightDate - leftDate;
+  })
+  .map((assignment) => serializeAssignment(rep, assignment));
+
+const buildRepQuery = async (user, queryParams = {}) => {
+  const query = {
+    role: "representative",
+    "assignedProducts.0": { $exists: true },
+  };
+  const accessibleRepIds = await getAccessibleRepIds(user);
+
+  if (accessibleRepIds) {
+    query._id = { $in: accessibleRepIds };
+  }
+
+  if (queryParams.medicalRepId) {
+    if (!isValidObjectId(queryParams.medicalRepId)) {
+      const error = new Error("medicalRepId must be a valid MongoDB ObjectId");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (accessibleRepIds && !accessibleRepIds.includes(String(queryParams.medicalRepId))) {
+      query._id = null;
+    } else {
+      query._id = queryParams.medicalRepId;
+    }
   }
 
   return query;
+};
+
+const addProductsToManager = async (rep, productIds) => {
+  const managerId = rep.managerId;
+
+  if (!managerId || productIds.length === 0) {
+    return;
+  }
+
+  await User.updateOne(
+    { _id: managerId },
+    { $addToSet: { assignedProductIds: { $each: productIds } } },
+  );
+};
+
+const syncAssignedProductIds = (rep) => {
+  rep.assignedProductIds = [
+    ...new Set((rep.assignedProducts || []).map((assignment) => String(assignment.productId))),
+  ];
 };
 
 router.get("/", auth, loadActor, async (req, res, next) => {
@@ -331,27 +370,20 @@ router.get("/", auth, loadActor, async (req, res, next) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
     const skip = (page - 1) * limit;
-    const query = await buildListQuery(req.currentUser, req.query);
-
-    const [assignments, total] = await Promise.all([
-      populateAssignment(
-        MedicalRepProductAssignment.find(query)
-          .sort({ startDate: -1, createdAt: -1 })
-          .skip(skip)
-          .limit(limit),
-      ),
-      MedicalRepProductAssignment.countDocuments(query),
-    ]);
+    const repQuery = await buildRepQuery(req.currentUser, req.query);
+    const reps = await User.find(repQuery).sort({ fullName: 1 });
+    const allAssignments = reps.flatMap((rep) => getFilteredAssignmentsForRep(rep, req.query));
+    const pagedAssignments = allAssignments.slice(skip, skip + limit);
 
     return res.status(200).json({
       success: true,
       message: "Medical rep product assignments fetched successfully",
-      data: assignments,
+      data: pagedAssignments,
       pagination: {
         page,
         limit,
-        total,
-        pages: Math.ceil(total / limit),
+        total: allAssignments.length,
+        pages: Math.ceil(allAssignments.length / limit),
       },
     });
   } catch (error) {
@@ -361,11 +393,8 @@ router.get("/", auth, loadActor, async (req, res, next) => {
 
 router.get("/medical-reps/:medicalRepId", auth, loadActor, async (req, res, next) => {
   try {
-    req.query.medicalRepId = req.params.medicalRepId;
-    const query = await buildListQuery(req.currentUser, req.query);
-    const assignments = await populateAssignment(
-      MedicalRepProductAssignment.find(query).sort({ startDate: -1, createdAt: -1 }),
-    );
+    const rep = await ensureCanAccessRep(req.currentUser, req.params.medicalRepId);
+    const assignments = getFilteredAssignmentsForRep(rep, req.query);
 
     return res.status(200).json({
       success: true,
@@ -379,64 +408,35 @@ router.get("/medical-reps/:medicalRepId", auth, loadActor, async (req, res, next
 
 router.patch("/medical-reps/:medicalRepId/close", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    if (!isValidObjectId(req.params.medicalRepId)) {
-      return res.status(400).json({
-        success: false,
-        message: "medicalRepId must be a valid MongoDB ObjectId",
-      });
-    }
-
     const rep = await ensureCanAccessRep(req.currentUser, req.params.medicalRepId);
     const endDate = parseDate(req.body.endDate, "endDate") || new Date();
+    const updatedAssignments = [];
 
-    const closeQuery = {
-      medicalRepId: rep._id,
-      status: "active",
-      isActive: true,
-      startDate: { $lte: endDate },
-      $or: [
-        { endDate: null },
-        { endDate: { $exists: false } },
-        { endDate: { $gte: endDate } },
-      ],
-    };
-
-    if (req.body.productId !== undefined) {
-      if (!isValidObjectId(req.body.productId)) {
-        return res.status(400).json({
-          success: false,
-          message: "productId must be a valid MongoDB ObjectId",
-        });
+    (rep.assignedProducts || []).forEach((assignment) => {
+      if (req.body.productId !== undefined && String(assignment.productId) !== String(req.body.productId)) {
+        return;
       }
 
-      closeQuery.productId = req.body.productId;
-    }
+      if (
+        assignment.status === "active"
+        && assignment.isActive
+        && assignmentOverlapsRange(assignment, new Date(0), new Date(endDate.getTime() + 1))
+      ) {
+        assignment.endDate = endDate;
+        assignment.updatedBy = req.currentUser._id;
+        updatedAssignments.push(assignment);
+      }
+    });
 
-    const result = await MedicalRepProductAssignment.updateMany(
-      closeQuery,
-      {
-        $set: {
-          endDate,
-          updatedBy: req.currentUser._id,
-        },
-      },
-    );
-
-    const assignments = await populateAssignment(
-      MedicalRepProductAssignment.find({
-        medicalRepId: rep._id,
-        updatedBy: req.currentUser._id,
-        endDate,
-      }).sort({ updatedAt: -1 }),
-    );
+    await rep.save();
 
     return res.status(200).json({
       success: true,
       message: "Medical rep product assignments closed successfully",
       data: {
-        matchedCount: result.matchedCount,
-        modifiedCount: result.modifiedCount,
-        assignments,
+        matchedCount: updatedAssignments.length,
+        modifiedCount: updatedAssignments.length,
+        assignments: updatedAssignments.map((assignment) => serializeAssignment(rep, assignment)),
       },
     });
   } catch (error) {
@@ -446,33 +446,28 @@ router.patch("/medical-reps/:medicalRepId/close", auth, loadActor, requireManage
 
 router.get("/:id", auth, loadActor, async (req, res, next) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Assignment id must be a valid MongoDB ObjectId",
-      });
-    }
+    const rep = await User.findOne({ "assignedProducts._id": req.params.id });
 
-    const assignment = await populateAssignment(MedicalRepProductAssignment.findById(req.params.id));
-
-    if (!assignment) {
+    if (!rep) {
       return res.status(404).json({
         success: false,
         message: "Medical rep product assignment not found",
       });
     }
 
-    if (!await canAccessUser(req.currentUser, assignment.medicalRepId)) {
+    if (!canAccessUser(req.currentUser, rep)) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to view this assignment",
       });
     }
 
+    const assignment = rep.assignedProducts.id(req.params.id);
+
     return res.status(200).json({
       success: true,
       message: "Medical rep product assignment fetched successfully",
-      data: assignment,
+      data: serializeAssignment(rep, assignment),
     });
   } catch (error) {
     return next(error);
@@ -512,45 +507,44 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       });
     }
 
-    for (const productId of productIds) {
-      await assertNoOverlappingAssignment({
-        medicalRepId: rep._id,
-        productId,
-        startDate,
-        endDate,
-      });
-    }
+    const createdAssignments = [];
+    const skippedProductIds = [];
 
-    const assignmentsToCreate = productIds.map((productId) => {
+    productIds.forEach((productId) => {
       const product = productsById.get(productId);
 
-      return {
-      medicalRepId: rep._id,
-      medicalRepSnapshot: buildRepSnapshot(rep),
-      productId: product._id,
-      productSnapshot: buildProductSnapshot(product),
-      startDate,
-      endDate,
-      status: "active",
-      isActive: true,
-      notes: req.body.notes,
-      assignedBy: req.currentUser._id,
-      updatedBy: req.currentUser._id,
-      };
+      if (hasOverlappingAssignment({ rep, productId, startDate, endDate })) {
+        skippedProductIds.push(productId);
+        return;
+      }
+
+      rep.assignedProducts.push({
+        productId: product._id,
+        productSnapshot: buildProductSnapshot(product),
+        startDate,
+        endDate,
+        status: "active",
+        isActive: true,
+        notes: req.body.notes,
+        assignedBy: req.currentUser._id,
+        updatedBy: req.currentUser._id,
+        assignedAt: new Date(),
+      });
+      createdAssignments.push(rep.assignedProducts[rep.assignedProducts.length - 1]);
     });
 
-    const assignments = await MedicalRepProductAssignment.insertMany(assignmentsToCreate);
-    const populatedAssignments = await populateAssignment(
-      MedicalRepProductAssignment.find({ _id: { $in: assignments.map((assignment) => assignment._id) } })
-        .sort({ createdAt: -1 }),
-    );
+    syncAssignedProductIds(rep);
+    await rep.save();
+    await addProductsToManager(rep, productIds);
 
     return res.status(201).json({
       success: true,
-      message: "Medical rep product assignments created successfully",
+      message: "Medical rep product assignments saved successfully",
       data: {
-        assignments: populatedAssignments,
-        createdCount: populatedAssignments.length,
+        assignments: createdAssignments.map((assignment) => serializeAssignment(rep, assignment)),
+        createdCount: createdAssignments.length,
+        skippedProductIds,
+        skippedCount: skippedProductIds.length,
       },
     });
   } catch (error) {
@@ -560,24 +554,18 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
 
 router.patch("/:id", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Assignment id must be a valid MongoDB ObjectId",
-      });
-    }
+    const rep = await User.findOne({ "assignedProducts._id": req.params.id });
 
-    const assignment = await MedicalRepProductAssignment.findById(req.params.id);
-
-    if (!assignment) {
+    if (!rep) {
       return res.status(404).json({
         success: false,
         message: "Medical rep product assignment not found",
       });
     }
 
-    await ensureCanAccessRep(req.currentUser, assignment.medicalRepId);
+    await ensureCanAccessRep(req.currentUser, rep._id);
 
+    const assignment = rep.assignedProducts.id(req.params.id);
     const update = {};
 
     if (req.body.startDate !== undefined) {
@@ -621,26 +609,30 @@ router.patch("/:id", auth, loadActor, requireManager, async (req, res, next) => 
     validateDateRange(nextStartDate, nextEndDate);
 
     if ((update.status || assignment.status) === "active" && (update.isActive ?? assignment.isActive)) {
-      await assertNoOverlappingAssignment({
-        medicalRepId: assignment.medicalRepId,
+      if (hasOverlappingAssignment({
+        rep,
         productId: assignment.productId,
         startDate: nextStartDate,
         endDate: nextEndDate,
-        excludeId: assignment._id,
-      });
+        excludeAssignmentId: assignment._id,
+      })) {
+        return res.status(409).json({
+          success: false,
+          message: "This medical rep already has an active assignment for this product in the selected date range",
+        });
+      }
     }
 
     Object.assign(assignment, update, {
       updatedBy: req.currentUser._id,
     });
-    await assignment.save();
-
-    const populatedAssignment = await populateAssignment(MedicalRepProductAssignment.findById(assignment._id));
+    syncAssignedProductIds(rep);
+    await rep.save();
 
     return res.status(200).json({
       success: true,
       message: "Medical rep product assignment updated successfully",
-      data: populatedAssignment,
+      data: serializeAssignment(rep, assignment),
     });
   } catch (error) {
     return next(error);
@@ -649,36 +641,29 @@ router.patch("/:id", auth, loadActor, requireManager, async (req, res, next) => 
 
 router.delete("/:id", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Assignment id must be a valid MongoDB ObjectId",
-      });
-    }
+    const rep = await User.findOne({ "assignedProducts._id": req.params.id });
 
-    const assignment = await MedicalRepProductAssignment.findById(req.params.id);
-
-    if (!assignment) {
+    if (!rep) {
       return res.status(404).json({
         success: false,
         message: "Medical rep product assignment not found",
       });
     }
 
-    await ensureCanAccessRep(req.currentUser, assignment.medicalRepId);
+    await ensureCanAccessRep(req.currentUser, rep._id);
 
+    const assignment = rep.assignedProducts.id(req.params.id);
     assignment.status = "inactive";
     assignment.isActive = false;
     assignment.endDate = assignment.endDate || new Date();
     assignment.updatedBy = req.currentUser._id;
-    await assignment.save();
-
-    const populatedAssignment = await populateAssignment(MedicalRepProductAssignment.findById(assignment._id));
+    syncAssignedProductIds(rep);
+    await rep.save();
 
     return res.status(200).json({
       success: true,
       message: "Medical rep product assignment deactivated successfully",
-      data: populatedAssignment,
+      data: serializeAssignment(rep, assignment),
     });
   } catch (error) {
     return next(error);

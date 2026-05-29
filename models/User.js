@@ -69,6 +69,69 @@ const notificationTokenSchema = new Schema(
   { _id: false },
 );
 
+const assignedProductSchema = new Schema(
+  {
+    productId: {
+      type: Schema.Types.ObjectId,
+      ref: "Product",
+      required: true,
+      index: true,
+    },
+    productSnapshot: {
+      productName: {
+        type: String,
+        trim: true,
+      },
+      productNickname: {
+        type: String,
+        trim: true,
+      },
+      lineId: {
+        type: String,
+        trim: true,
+        uppercase: true,
+      },
+      lineName: {
+        type: String,
+        trim: true,
+      },
+    },
+    startDate: {
+      type: Date,
+      required: true,
+    },
+    endDate: Date,
+    status: {
+      type: String,
+      enum: ["active", "inactive"],
+      default: "active",
+      index: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    notes: {
+      type: String,
+      trim: true,
+    },
+    assignedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    updatedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+    assignedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { timestamps: true },
+);
+
 const userSchema = new Schema(
   {
     email: {
@@ -200,6 +263,17 @@ const userSchema = new Schema(
         ref: "Item",
       },
     ],
+    assignedProductIds: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "Product",
+        index: true,
+      },
+    ],
+    assignedProducts: {
+      type: [assignedProductSchema],
+      default: [],
+    },
     yearlyTargetValue: {
       type: Number,
       default: 0,
