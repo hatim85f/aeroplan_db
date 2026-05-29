@@ -196,6 +196,21 @@ const validateDateRange = (startDate, endDate) => {
   }
 };
 
+const getUtcYearRange = (yearValue) => {
+  const year = Number(yearValue);
+
+  if (!Number.isInteger(year) || year < 1970 || year > 9999) {
+    const error = new Error("year must be a valid four digit year");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    yearStart: new Date(Date.UTC(year, 0, 1)),
+    nextYearStart: new Date(Date.UTC(year + 1, 0, 1)),
+  };
+};
+
 const assertNoOverlappingAssignment = async ({
   medicalRepId,
   productId,
@@ -287,7 +302,16 @@ const buildListQuery = async (user, queryParams) => {
     query.isActive = normalizeBoolean(queryParams.isActive);
   }
 
-  if (queryParams.activeOn) {
+  if (queryParams.year) {
+    const { yearStart, nextYearStart } = getUtcYearRange(queryParams.year);
+
+    query.startDate = { $lt: nextYearStart };
+    query.$or = [
+      { endDate: null },
+      { endDate: { $exists: false } },
+      { endDate: { $gte: yearStart } },
+    ];
+  } else if (queryParams.activeOn) {
     const activeOn = parseDate(queryParams.activeOn, "activeOn");
     query.status = "active";
     query.isActive = true;
