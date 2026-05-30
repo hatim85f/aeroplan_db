@@ -405,6 +405,76 @@ const syncAssignedProductIds = (rep) => {
   ];
 };
 
+const createAssignmentsForRep = async ({ actor, body }) => {
+  if (!body.medicalRepId || !isValidObjectId(body.medicalRepId)) {
+    const error = new Error("medicalRepId must be a valid MongoDB ObjectId");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const productIds = normalizeProductIds(body);
+  const startDate = parseDate(body.startDate, "startDate");
+  const endDate = parseDate(body.endDate, "endDate");
+  validateDateRange(startDate, endDate);
+
+  const [rep, products] = await Promise.all([
+    ensureCanAccessRep(actor, body.medicalRepId),
+    Product.find({
+      _id: { $in: productIds },
+      status: "active",
+      isActive: true,
+    }).lean(),
+  ]);
+
+  const productsById = new Map(products.map((product) => [String(product._id), product]));
+  const missingProductId = productIds.find((productId) => !productsById.has(productId));
+
+  if (missingProductId) {
+    const error = new Error(`Active product not found: ${missingProductId}`);
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const createdAssignments = [];
+  const skippedProductIds = [];
+
+  productIds.forEach((productId) => {
+    const product = productsById.get(productId);
+
+    if (hasOverlappingAssignment({ rep, productId, startDate, endDate })) {
+      skippedProductIds.push(productId);
+      return;
+    }
+
+    rep.assignedProducts.push({
+      productId: product._id,
+      productSnapshot: buildProductSnapshot(product),
+      startDate,
+      endDate,
+      accountabilityPercentage: getProductAccountabilityPercentage(body, productId),
+      status: "active",
+      isActive: true,
+      notes: body.notes,
+      assignedBy: actor._id,
+      updatedBy: actor._id,
+      assignedAt: new Date(),
+    });
+    createdAssignments.push(rep.assignedProducts[rep.assignedProducts.length - 1]);
+  });
+
+  syncAssignedProductIds(rep);
+  await rep.save();
+  await addProductsToManager(rep, productIds);
+
+  return {
+    rep,
+    assignments: createdAssignments.map((assignment) => serializeAssignment(rep, assignment)),
+    createdCount: createdAssignments.length,
+    skippedProductIds,
+    skippedCount: skippedProductIds.length,
+  };
+};
+
 router.get("/", auth, loadActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -516,76 +586,77 @@ router.get("/:id", auth, loadActor, async (req, res, next) => {
 
 router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    if (!req.body.medicalRepId || !isValidObjectId(req.body.medicalRepId)) {
-      return res.status(400).json({
-        success: false,
-        message: "medicalRepId must be a valid MongoDB ObjectId",
-      });
-    }
-
-    const productIds = normalizeProductIds(req.body);
-    const startDate = parseDate(req.body.startDate, "startDate");
-    const endDate = parseDate(req.body.endDate, "endDate");
-    validateDateRange(startDate, endDate);
-
-    const [rep, products] = await Promise.all([
-      ensureCanAccessRep(req.currentUser, req.body.medicalRepId),
-      Product.find({
-        _id: { $in: productIds },
-        status: "active",
-        isActive: true,
-      }).lean(),
-    ]);
-
-    const productsById = new Map(products.map((product) => [String(product._id), product]));
-    const missingProductId = productIds.find((productId) => !productsById.has(productId));
-
-    if (missingProductId) {
-      return res.status(404).json({
-        success: false,
-        message: `Active product not found: ${missingProductId}`,
-      });
-    }
-
-    const createdAssignments = [];
-    const skippedProductIds = [];
-
-    productIds.forEach((productId) => {
-      const product = productsById.get(productId);
-
-      if (hasOverlappingAssignment({ rep, productId, startDate, endDate })) {
-        skippedProductIds.push(productId);
-        return;
-      }
-
-      rep.assignedProducts.push({
-        productId: product._id,
-        productSnapshot: buildProductSnapshot(product),
-        startDate,
-        endDate,
-        accountabilityPercentage: getProductAccountabilityPercentage(req.body, productId),
-        status: "active",
-        isActive: true,
-        notes: req.body.notes,
-        assignedBy: req.currentUser._id,
-        updatedBy: req.currentUser._id,
-        assignedAt: new Date(),
-      });
-      createdAssignments.push(rep.assignedProducts[rep.assignedProducts.length - 1]);
+    const result = await createAssignmentsForRep({
+      actor: req.currentUser,
+      body: req.body,
     });
-
-    syncAssignedProductIds(rep);
-    await rep.save();
-    await addProductsToManager(rep, productIds);
 
     return res.status(201).json({
       success: true,
       message: "Medical rep product assignments saved successfully",
       data: {
-        assignments: createdAssignments.map((assignment) => serializeAssignment(rep, assignment)),
-        createdCount: createdAssignments.length,
-        skippedProductIds,
-        skippedCount: skippedProductIds.length,
+        assignments: result.assignments,
+        createdCount: result.createdCount,
+        skippedProductIds: result.skippedProductIds,
+        skippedCount: result.skippedCount,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/bulk", auth, loadActor, requireManager, async (req, res, next) => {
+  try {
+    const assignments = Array.isArray(req.body) ? req.body : req.body.assignments;
+
+    if (!Array.isArray(assignments) || assignments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "assignments must be a non-empty array",
+      });
+    }
+
+    const created = [];
+    const skipped = [];
+    const failed = [];
+
+    for (const [index, assignmentInput] of assignments.entries()) {
+      try {
+        const result = await createAssignmentsForRep({
+          actor: req.currentUser,
+          body: assignmentInput || {},
+        });
+
+        created.push(...result.assignments);
+        result.skippedProductIds.forEach((productId) => {
+          skipped.push({
+            index,
+            medicalRepId: assignmentInput.medicalRepId,
+            productId,
+            reason: "Overlapping active assignment already exists",
+          });
+        });
+      } catch (error) {
+        failed.push({
+          index,
+          assignment: assignmentInput,
+          reason: error.message || "Invalid medical rep product assignment",
+        });
+      }
+    }
+
+    return res.status(201).json({
+      success: failed.length === 0,
+      message: "Bulk medical rep product assignment import completed",
+      data: {
+        total: assignments.length,
+        createdCount: created.length,
+        skippedCount: skipped.length,
+        failedCount: failed.length,
+        created,
+        skipped,
+        failed,
       },
     });
   } catch (error) {
