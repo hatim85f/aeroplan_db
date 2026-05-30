@@ -691,25 +691,13 @@ const upsertDerivedTarget = async (payload, actor) => {
   return { assignment, action: "created" };
 };
 
-router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
-  try {
-    const assignment = await createAssignment({
-      actor: req.currentUser,
-      body: req.body,
-    });
-    const populatedAssignment = await populateAssignment(TargetAssignment.findById(assignment._id));
+const isProductAssignmentTargetPayload = (body = {}) => (
+  !body.userId
+    && (Array.isArray(body.channelTargets) || Array.isArray(body.channels))
+    && (body.productId || body.itemId)
+);
 
-    return res.status(201).json({
-      success: true,
-      message: "Target assignment created successfully",
-      data: populatedAssignment,
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/from-product-assignments", auth, loadActor, requireManager, async (req, res, next) => {
+const createTargetsFromProductAssignments = async (req, res, next) => {
   try {
     const productId = validateObjectId(req.body.productId || req.body.itemId, "productId");
     const { year, yearStart, yearEnd, nextYearStart } = getUtcYearBounds(req.body.year);
@@ -824,7 +812,31 @@ router.post("/from-product-assignments", auth, loadActor, requireManager, async 
   } catch (error) {
     return next(error);
   }
+};
+
+router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
+  if (isProductAssignmentTargetPayload(req.body)) {
+    return createTargetsFromProductAssignments(req, res, next);
+  }
+
+  try {
+    const assignment = await createAssignment({
+      actor: req.currentUser,
+      body: req.body,
+    });
+    const populatedAssignment = await populateAssignment(TargetAssignment.findById(assignment._id));
+
+    return res.status(201).json({
+      success: true,
+      message: "Target assignment created successfully",
+      data: populatedAssignment,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
+
+router.post("/from-product-assignments", auth, loadActor, requireManager, createTargetsFromProductAssignments);
 
 router.post("/bulk", auth, loadActor, requireManager, async (req, res, next) => {
   try {
