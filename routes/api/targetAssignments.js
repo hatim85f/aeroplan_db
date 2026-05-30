@@ -614,9 +614,25 @@ const normalizeChannelTargets = (body = {}) => {
   });
 };
 
+const normalizeAccountabilityPercentage = (value) => {
+  if (value === undefined || value === null || value === "") {
+    return 100;
+  }
+
+  const percentage = Number(value);
+
+  if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+    return 100;
+  }
+
+  return percentage;
+};
+
 const buildDerivedTargetPayload = ({ actor, rep, product, channelPricing, channel, assignment, year, yearStart, yearEnd, units, notes }) => {
   const startDate = maxDate(assignment.startDate, yearStart);
   const endDate = minDate(assignment.endDate || yearEnd, yearEnd);
+  const accountabilityPercentage = normalizeAccountabilityPercentage(assignment.accountabilityPercentage);
+  const assignedUnits = (units * accountabilityPercentage) / 100;
   const targetValueBasis = channelPricing.targetValueBasis || "cifUsd";
   const targetCurrency = channelPricing.targetCurrency || getDefaultTargetCurrency(targetValueBasis);
   const unitValue = Number(channelPricing[targetValueBasis]) || 0;
@@ -637,8 +653,9 @@ const buildDerivedTargetPayload = ({ actor, rep, product, channelPricing, channe
     year,
     startDate,
     endDate,
-    totalTargetUnits: units,
-    totalTargetValue: units * unitValue,
+    accountabilityPercentage,
+    totalTargetUnits: assignedUnits,
+    totalTargetValue: assignedUnits * unitValue,
     targetValueBasis,
     targetCurrency,
     notes,

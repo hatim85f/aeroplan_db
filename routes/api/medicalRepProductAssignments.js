@@ -182,6 +182,45 @@ const normalizeProductIds = (body = {}) => {
   return productIds;
 };
 
+const normalizeAccountabilityPercentage = (value, fieldName = "accountabilityPercentage") => {
+  if (value === undefined || value === null || value === "") {
+    return 100;
+  }
+
+  const percentage = Number(value);
+
+  if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+    const error = new Error(`${fieldName} must be a number between 0 and 100`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return percentage;
+};
+
+const getProductAccountabilityPercentage = (body = {}, productId) => {
+  if (Array.isArray(body.products)) {
+    const matchingProduct = body.products.find((product) => {
+      const currentProductId = typeof product === "object" && product !== null
+        ? product.productId || product._id
+        : product;
+
+      return String(currentProductId) === String(productId);
+    });
+
+    if (matchingProduct && typeof matchingProduct === "object") {
+      return normalizeAccountabilityPercentage(
+        matchingProduct.accountabilityPercentage ?? matchingProduct.percentage,
+        `products.${productId}.accountabilityPercentage`,
+      );
+    }
+  }
+
+  return normalizeAccountabilityPercentage(
+    body.accountabilityPercentage ?? body.percentage,
+  );
+};
+
 const validateDateRange = (startDate, endDate) => {
   if (!startDate) {
     const error = new Error("startDate is required");
@@ -298,6 +337,7 @@ const serializeAssignment = (rep, assignment) => ({
   productSnapshot: assignment.productSnapshot || {},
   startDate: assignment.startDate,
   endDate: assignment.endDate,
+  accountabilityPercentage: assignment.accountabilityPercentage ?? 100,
   status: assignment.status,
   isActive: assignment.isActive,
   notes: assignment.notes,
@@ -523,6 +563,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
         productSnapshot: buildProductSnapshot(product),
         startDate,
         endDate,
+        accountabilityPercentage: getProductAccountabilityPercentage(req.body, productId),
         status: "active",
         isActive: true,
         notes: req.body.notes,
@@ -574,6 +615,12 @@ router.patch("/:id", auth, loadActor, requireManager, async (req, res, next) => 
 
     if (req.body.endDate !== undefined) {
       update.endDate = parseDate(req.body.endDate, "endDate");
+    }
+
+    if (req.body.accountabilityPercentage !== undefined || req.body.percentage !== undefined) {
+      update.accountabilityPercentage = normalizeAccountabilityPercentage(
+        req.body.accountabilityPercentage ?? req.body.percentage,
+      );
     }
 
     if (req.body.notes !== undefined) {

@@ -83,6 +83,12 @@ const targetAssignmentSchema = new Schema(
       required: true,
       index: true,
     },
+    accountabilityPercentage: {
+      type: Number,
+      default: 100,
+      min: 0,
+      max: 100,
+    },
     totalTargetUnits: {
       type: Number,
       default: 0,

@@ -101,6 +101,12 @@ const assignedProductSchema = new Schema(
       required: true,
     },
     endDate: Date,
+    accountabilityPercentage: {
+      type: Number,
+      default: 100,
+      min: 0,
+      max: 100,
+    },
     status: {
       type: String,
       enum: ["active", "inactive"],
