@@ -15,6 +15,17 @@ const targetAssignmentSchema = new Schema(
       required: true,
       trim: true,
     },
+    medicalRepStatus: {
+      type: String,
+      enum: ["active", "inactive"],
+      default: "active",
+      index: true,
+    },
+    medicalRepIsActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
     managerId: {
       type: Schema.Types.ObjectId,
       ref: "User",

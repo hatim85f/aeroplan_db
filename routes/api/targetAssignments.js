@@ -124,6 +124,10 @@ const getDefaultTargetCurrency = (targetValueBasis) => (
   targetValueBasis === "cifUsd" ? "USD" : "AED"
 );
 
+const getMedicalRepTargetStatus = (rep) => (
+  rep?.status === "active" ? "active" : "inactive"
+);
+
 const getCurrentUser = async (req) => User.findById(req.user.id);
 
 const loadActor = async (req, res, next) => {
@@ -276,6 +280,8 @@ const buildAssignmentPayload = async ({ actor, body, existingAssignment }) => {
   const payload = {
     userId: rep._id,
     userName: rep.fullName || rep.userName || rep.email,
+    medicalRepStatus: getMedicalRepTargetStatus(rep),
+    medicalRepIsActive: rep.status === "active",
     managerId: rep.managerId,
     teamId: rep.teamId,
     lineId: product.lineId,
@@ -340,6 +346,21 @@ const populateAssignment = (query) => query
   .populate("channelId", "channelName channelKey")
   .populate("createdBy", "fullName email appId role")
   .populate("updatedBy", "fullName email appId role");
+
+const serializeTargetAssignment = (assignment) => {
+  const data = typeof assignment.toObject === "function" ? assignment.toObject() : { ...assignment };
+  const currentRepStatus = getMedicalRepTargetStatus(data.userId);
+  const storedRepStatus = data.medicalRepStatus || "active";
+  const medicalRepStatus = data.userId?.status ? currentRepStatus : storedRepStatus;
+
+  return {
+    ...data,
+    medicalRepStatus,
+    medicalRepIsActive: medicalRepStatus === "active",
+  };
+};
+
+const serializeTargetAssignments = (assignments) => assignments.map(serializeTargetAssignment);
 
 const buildAssignmentQuery = async (user, queryParams = {}) => {
   const query = {};
@@ -534,6 +555,8 @@ const buildMonthlyBreakdown = (assignment, phasing) => {
 
   return {
     targetAssignmentId: assignment._id,
+    medicalRepStatus: assignment.medicalRepStatus || "active",
+    medicalRepIsActive: (assignment.medicalRepStatus || "active") === "active",
     phasingId: phasing._id,
     phasingName: phasing.name,
     period: {
@@ -640,6 +663,8 @@ const buildDerivedTargetPayload = ({ actor, rep, product, channelPricing, channe
   return {
     userId: rep._id,
     userName: rep.fullName || rep.userName || rep.email,
+    medicalRepStatus: getMedicalRepTargetStatus(rep),
+    medicalRepIsActive: rep.status === "active",
     managerId: rep.managerId,
     teamId: rep.teamId,
     lineId: product.lineId,
@@ -721,7 +746,6 @@ const createTargetsFromProductAssignments = async (req, res, next) => {
       }).lean(),
       User.find({
         role: "representative",
-        status: "active",
         "assignedProducts.productId": productId,
       }),
     ]);
@@ -810,7 +834,7 @@ const createTargetsFromProductAssignments = async (req, res, next) => {
         createdCount: createdIds.length,
         updatedCount: updatedIds.length,
         failedCount: failed.length,
-        assignments,
+        assignments: serializeTargetAssignments(assignments),
         failed,
       },
     });
@@ -834,7 +858,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
     return res.status(201).json({
       success: true,
       message: "Target assignment created successfully",
-      data: populatedAssignment,
+      data: serializeTargetAssignment(populatedAssignment),
     });
   } catch (error) {
     return next(error);
@@ -886,7 +910,7 @@ router.post("/bulk", auth, loadActor, requireManager, async (req, res, next) => 
         total: targets.length,
         createdCount: createdAssignments.length,
         failedCount: failed.length,
-        created: createdAssignments,
+        created: serializeTargetAssignments(createdAssignments),
         failed,
       },
     });
@@ -1015,7 +1039,7 @@ router.get("/", auth, loadActor, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "Target assignments fetched successfully",
-      data: assignments,
+      data: serializeTargetAssignments(assignments),
       pagination: {
         page,
         limit,
@@ -1056,7 +1080,7 @@ router.get("/:id", auth, loadActor, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "Target assignment fetched successfully",
-      data: assignment,
+      data: serializeTargetAssignment(assignment),
     });
   } catch (error) {
     return next(error);
@@ -1128,7 +1152,7 @@ router.patch("/:id", auth, loadActor, requireManager, async (req, res, next) => 
     return res.status(200).json({
       success: true,
       message: "Target assignment updated successfully",
-      data: populatedAssignment,
+      data: serializeTargetAssignment(populatedAssignment),
     });
   } catch (error) {
     return next(error);
@@ -1190,7 +1214,7 @@ router.patch("/:id/status", auth, loadActor, requireManager, async (req, res, ne
     return res.status(200).json({
       success: true,
       message: "Target assignment status updated successfully",
-      data: populatedAssignment,
+      data: serializeTargetAssignment(populatedAssignment),
     });
   } catch (error) {
     return next(error);
@@ -1232,7 +1256,7 @@ router.delete("/:id", auth, loadActor, requireManager, async (req, res, next) =>
     return res.status(200).json({
       success: true,
       message: "Target assignment deactivated successfully",
-      data: populatedAssignment,
+      data: serializeTargetAssignment(populatedAssignment),
     });
   } catch (error) {
     return next(error);
