@@ -548,18 +548,6 @@ const buildMonthlyBreakdown = (assignment, phasing) => {
   };
 };
 
-const getAssignmentLifecycleStatus = (assignment, now = new Date()) => {
-  if (assignment.endDate < now) {
-    return "expired";
-  }
-
-  if (assignment.startDate > now) {
-    return "upcoming";
-  }
-
-  return "active";
-};
-
 const addToGroup = (groups, key, label, assignment) => {
   if (!key) {
     return;
@@ -892,14 +880,9 @@ router.post("/bulk", auth, loadActor, requireManager, async (req, res, next) => 
 
 router.get("/overview", auth, loadActor, async (req, res, next) => {
   try {
-    const query = await buildAssignmentQuery(req.currentUser, {
-      ...req.query,
-      status: req.query.status || "active",
-    });
-    query.isActive = true;
+    const query = await buildAssignmentQuery(req.currentUser, req.query);
 
     const assignments = await TargetAssignment.find(query).lean();
-    const now = new Date();
     const targetByRep = {};
     const targetByProduct = {};
     const targetByChannel = {};
@@ -907,22 +890,17 @@ router.get("/overview", auth, loadActor, async (req, res, next) => {
       totalTargetUnits: 0,
       totalTargetValue: 0,
       activeAssignmentsCount: 0,
-      upcomingAssignmentsCount: 0,
-      expiredAssignmentsCount: 0,
+      inactiveAssignmentsCount: 0,
     };
 
     assignments.forEach((assignment) => {
       overview.totalTargetUnits += assignment.totalTargetUnits || 0;
       overview.totalTargetValue += assignment.totalTargetValue || 0;
 
-      const lifecycleStatus = getAssignmentLifecycleStatus(assignment, now);
-
-      if (lifecycleStatus === "active") {
+      if (assignment.status === "active" && assignment.isActive !== false) {
         overview.activeAssignmentsCount += 1;
-      } else if (lifecycleStatus === "upcoming") {
-        overview.upcomingAssignmentsCount += 1;
       } else {
-        overview.expiredAssignmentsCount += 1;
+        overview.inactiveAssignmentsCount += 1;
       }
 
       addToGroup(targetByRep, String(assignment.userId), assignment.userName, assignment);
