@@ -580,6 +580,117 @@ const addToGroup = (groups, key, label, assignment) => {
   groups[key].assignmentsCount += 1;
 };
 
+const getUtcYearBounds = (yearValue) => {
+  const year = normalizeYear(yearValue);
+
+  return {
+    year,
+    yearStart: new Date(Date.UTC(year, 0, 1)),
+    yearEnd: new Date(Date.UTC(year, 11, 31)),
+    nextYearStart: new Date(Date.UTC(year + 1, 0, 1)),
+  };
+};
+
+const maxDate = (left, right) => (left > right ? left : right);
+const minDate = (left, right) => (left < right ? left : right);
+
+const assignmentOverlapsYear = (assignment, yearStart, nextYearStart) => {
+  const assignmentEnd = assignment.endDate || FAR_FUTURE;
+
+  return assignment.status === "active"
+    && assignment.isActive
+    && assignment.startDate < nextYearStart
+    && assignmentEnd >= yearStart;
+};
+
+const normalizeChannelTargets = (body = {}) => {
+  const source = body.channelTargets || body.targets || body.channels;
+
+  if (!Array.isArray(source) || source.length === 0) {
+    const error = new Error("channelTargets must be a non-empty array");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return source.map((target, index) => {
+    const channelId = target.channelId || target.salesChannelId;
+
+    return {
+      channelId: validateObjectId(channelId, `channelTargets.${index}.channelId`),
+      totalTargetUnits: normalizeNumber(
+        target.totalTargetUnits ?? target.targetUnits ?? target.units,
+        `channelTargets.${index}.units`,
+      ),
+      notes: target.notes,
+    };
+  });
+};
+
+const buildDerivedTargetPayload = ({ actor, rep, product, channelPricing, channel, assignment, year, yearStart, yearEnd, units, notes }) => {
+  const startDate = maxDate(assignment.startDate, yearStart);
+  const endDate = minDate(assignment.endDate || yearEnd, yearEnd);
+  const targetValueBasis = channelPricing.targetValueBasis || "cifUsd";
+  const targetCurrency = channelPricing.targetCurrency || getDefaultTargetCurrency(targetValueBasis);
+  const unitValue = Number(channelPricing[targetValueBasis]) || 0;
+
+  return {
+    userId: rep._id,
+    userName: rep.fullName || rep.userName || rep.email,
+    managerId: rep.managerId,
+    teamId: rep.teamId,
+    lineId: product.lineId,
+    lineName: product.lineName,
+    productId: product._id,
+    productName: product.productName,
+    productNickname: product.productNickname,
+    channelId: channel._id,
+    channelName: channel.channelName,
+    channelKey: channel.channelKey,
+    year,
+    startDate,
+    endDate,
+    totalTargetUnits: units,
+    totalTargetValue: units * unitValue,
+    targetValueBasis,
+    targetCurrency,
+    notes,
+    updatedBy: actor._id,
+  };
+};
+
+const upsertDerivedTarget = async (payload, actor) => {
+  const existing = await TargetAssignment.findOne({
+    userId: payload.userId,
+    productId: payload.productId,
+    channelId: payload.channelId,
+    year: payload.year,
+    startDate: payload.startDate,
+    endDate: payload.endDate,
+  });
+
+  if (existing) {
+    Object.assign(existing, payload, {
+      status: "active",
+      isActive: true,
+    });
+    await existing.save();
+
+    return { assignment: existing, action: "updated" };
+  }
+
+  await assertNoOverlap({ payload });
+
+  const assignment = await TargetAssignment.create({
+    ...payload,
+    status: "active",
+    isActive: true,
+    createdBy: actor._id,
+    updatedBy: actor._id,
+  });
+
+  return { assignment, action: "created" };
+};
+
 router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {
     const assignment = await createAssignment({
@@ -592,6 +703,123 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       success: true,
       message: "Target assignment created successfully",
       data: populatedAssignment,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/from-product-assignments", auth, loadActor, requireManager, async (req, res, next) => {
+  try {
+    const productId = validateObjectId(req.body.productId || req.body.itemId, "productId");
+    const { year, yearStart, yearEnd, nextYearStart } = getUtcYearBounds(req.body.year);
+    const channelTargets = normalizeChannelTargets(req.body);
+
+    const [product, channels, reps] = await Promise.all([
+      Product.findOne({
+        _id: productId,
+        status: "active",
+        isActive: true,
+      }).lean(),
+      SalesChannel.find({
+        _id: { $in: channelTargets.map((target) => target.channelId) },
+        status: "active",
+        isActive: true,
+      }).lean(),
+      User.find({
+        role: "representative",
+        status: "active",
+        "assignedProducts.productId": productId,
+      }),
+    ]);
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Active product not found",
+      });
+    }
+
+    const accessibleRepIds = await getAccessibleRepIds(req.currentUser);
+    const channelsById = new Map(channels.map((channel) => [String(channel._id), channel]));
+    const pricingByChannelId = new Map((product.channelPricing || []).map((pricing) => [String(pricing.channelId), pricing]));
+    const createdIds = [];
+    const updatedIds = [];
+    const failed = [];
+
+    for (const rep of reps) {
+      if (accessibleRepIds && !accessibleRepIds.includes(String(rep._id))) {
+        continue;
+      }
+
+      const matchingAssignments = (rep.assignedProducts || []).filter((assignment) => (
+        String(assignment.productId) === productId
+          && assignmentOverlapsYear(assignment, yearStart, nextYearStart)
+      ));
+
+      for (const productAssignment of matchingAssignments) {
+        for (const channelTarget of channelTargets) {
+          try {
+            const channel = channelsById.get(String(channelTarget.channelId));
+            const channelPricing = pricingByChannelId.get(String(channelTarget.channelId));
+
+            if (!channel) {
+              throw new Error(`Active sales channel not found: ${channelTarget.channelId}`);
+            }
+
+            if (!channelPricing || channelPricing.isAvailable === false) {
+              throw new Error(`Product does not have active pricing for channel: ${channelTarget.channelId}`);
+            }
+
+            const payload = buildDerivedTargetPayload({
+              actor: req.currentUser,
+              rep,
+              product,
+              channelPricing,
+              channel,
+              assignment: productAssignment,
+              year,
+              yearStart,
+              yearEnd,
+              units: channelTarget.totalTargetUnits,
+              notes: channelTarget.notes ?? req.body.notes,
+            });
+            const result = await upsertDerivedTarget(payload, req.currentUser);
+
+            if (result.action === "created") {
+              createdIds.push(result.assignment._id);
+            } else {
+              updatedIds.push(result.assignment._id);
+            }
+          } catch (error) {
+            failed.push({
+              medicalRepId: rep._id,
+              productAssignmentId: productAssignment._id,
+              channelId: channelTarget.channelId,
+              reason: error.message || "Could not save derived target",
+            });
+          }
+        }
+      }
+    }
+
+    const savedIds = [...createdIds, ...updatedIds];
+    const assignments = savedIds.length
+      ? await populateAssignment(TargetAssignment.find({ _id: { $in: savedIds } }).sort({ userName: 1, channelName: 1 }))
+      : [];
+
+    return res.status(201).json({
+      success: failed.length === 0,
+      message: "Product target assignments processed successfully",
+      data: {
+        productId,
+        year,
+        createdCount: createdIds.length,
+        updatedCount: updatedIds.length,
+        failedCount: failed.length,
+        assignments,
+        failed,
+      },
     });
   } catch (error) {
     return next(error);
