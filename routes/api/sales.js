@@ -114,6 +114,44 @@ const requireManager = (req, res, next) => {
   return next();
 };
 
+const getAccessibleSalesQuery = async (user) => {
+  if (user.role === "admin") {
+    return {};
+  }
+
+  const scopedUsers = isManagerRole(user.role)
+    ? await User.find({
+      $or: [
+        { _id: user._id },
+        { path: user._id },
+      ],
+    }).select("_id").lean()
+    : [{ _id: user._id }];
+  const scopedUserIds = scopedUsers.map((scopedUser) => scopedUser._id);
+  const accounts = await Account.find({
+    assignedMedicalRepIds: { $in: scopedUserIds },
+  }).select("_id").lean();
+
+  if (accounts.length === 0) {
+    return { _id: null };
+  }
+
+  return {
+    accountId: { $in: accounts.map((account) => account._id) },
+  };
+};
+
+const getScopedSalesRecord = async (recordId, user) => {
+  if (!isValidObjectId(recordId)) {
+    return null;
+  }
+
+  return SalesRecord.findOne({
+    _id: recordId,
+    ...await getAccessibleSalesQuery(user),
+  });
+};
+
 const validateMonthYear = (month, year) => {
   const parsedMonth = Number(month);
   const parsedYear = Number(year);
@@ -299,27 +337,21 @@ const detectSalesChannel = async (row, product) => {
     }
   }
 
-  const uploadedUnitValue = row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0;
-  const currency = String(row.uploadedCurrency || "").toUpperCase();
+  const uploadedUnitCif = row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0;
 
-  if (uploadedUnitValue > 0 && ["AED", "USD"].includes(currency)) {
+  if (uploadedUnitCif > 0) {
     const matches = (product.channelPricing || []).filter((pricing) => {
       if (pricing.isAvailable === false) {
         return false;
       }
 
-      const unitValues = currency === "USD"
-        ? [Number(pricing.cifUsd)]
-        : [Number(pricing.wholesaleAed), Number(pricing.retailAed)];
-      const validUnitValues = unitValues.filter((value) => value > 0);
+      const unitCifUsd = Number(pricing.cifUsd) || 0;
 
-      if (validUnitValues.length === 0) {
+      if (unitCifUsd <= 0) {
         return false;
       }
 
-      return validUnitValues.some((unitValue) => (
-        Math.abs(uploadedUnitValue - unitValue) / unitValue <= PRICE_MATCH_TOLERANCE
-      ));
+      return Math.abs(uploadedUnitCif - unitCifUsd) / unitCifUsd <= PRICE_MATCH_TOLERANCE;
     });
 
     if (matches.length === 1) {
@@ -341,7 +373,7 @@ const detectSalesChannel = async (row, product) => {
     channel: null,
     pricing: null,
     method: "unknown",
-    warning: "Sales channel could not be detected",
+    warning: "Sales channel could not be detected from uploaded CIF unit value",
   };
 };
 
@@ -366,8 +398,10 @@ const buildCalculatedValues = (quantity, pricing) => {
   };
 };
 
-const buildSalesQuery = async (queryParams) => {
-  const query = {};
+const buildSalesQuery = async (queryParams, user) => {
+  const query = {
+    ...await getAccessibleSalesQuery(user),
+  };
 
   if (queryParams.batchId) {
     query.salesUploadBatchId = isValidObjectId(queryParams.batchId)
@@ -377,9 +411,17 @@ const buildSalesQuery = async (queryParams) => {
 
   ["accountId", "productId", "channelId"].forEach((field) => {
     if (queryParams[field]) {
-      query[field] = isValidObjectId(queryParams[field])
+      const objectId = isValidObjectId(queryParams[field])
         ? new mongoose.Types.ObjectId(queryParams[field])
         : null;
+
+      if (field === "accountId" && query.accountId?.$in) {
+        query.accountId = objectId && query.accountId.$in.some((accountId) => String(accountId) === String(objectId))
+          ? objectId
+          : null;
+      } else {
+        query[field] = objectId;
+      }
     }
   });
 
@@ -635,19 +677,28 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
 
 router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
-    const query = {
+    let records;
+
+    if (req.body.salesRecordId) {
+      const record = await getScopedSalesRecord(req.body.salesRecordId, req.currentUser);
+
+      if (!record) {
+        return res.status(404).json({ success: false, message: "Sales record not found" });
+      }
+
+      records = [record];
+    } else {
+      const query = {
       status: "active",
       isActive: true,
       accountId: { $exists: true },
       productId: { $exists: true },
       channelId: { $exists: true },
-    };
+      ...await getAccessibleSalesQuery(req.currentUser),
+      };
 
-    if (req.body.salesRecordId && isValidObjectId(req.body.salesRecordId)) {
-      query._id = req.body.salesRecordId;
+      records = await SalesRecord.find(query);
     }
-
-    const records = await SalesRecord.find(query);
     const matched = [];
     const needsReview = [];
 
@@ -725,18 +776,27 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
 
 router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
-    const query = {
+    let records;
+
+    if (req.body.salesRecordId) {
+      const record = await getScopedSalesRecord(req.body.salesRecordId, req.currentUser);
+
+      if (!record) {
+        return res.status(404).json({ success: false, message: "Sales record not found" });
+      }
+
+      records = [record];
+    } else {
+      const query = {
       status: "active",
       isActive: true,
       productId: { $exists: true },
       channelId: { $exists: true },
-    };
+      ...await getAccessibleSalesQuery(req.currentUser),
+      };
 
-    if (req.body.salesRecordId && isValidObjectId(req.body.salesRecordId)) {
-      query._id = req.body.salesRecordId;
+      records = await SalesRecord.find(query);
     }
-
-    const records = await SalesRecord.find(query);
     const matched = [];
     const needsReview = [];
 
@@ -786,7 +846,7 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
 
 router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
   try {
-    const baseQuery = await buildSalesQuery(req.query);
+    const baseQuery = await buildSalesQuery(req.query, req.currentUser);
     baseQuery.status = baseQuery.status || "active";
     baseQuery.isActive = true;
 
@@ -1070,7 +1130,7 @@ router.get("/batches/:id", auth, loadSalesActor, async (req, res, next) => {
 router.get("/batches/:id/records", auth, loadSalesActor, async (req, res, next) => {
   try {
     req.query.batchId = req.params.id;
-    const query = await buildSalesQuery(req.query);
+    const query = await buildSalesQuery(req.query, req.currentUser);
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const [records, total] = await Promise.all([
@@ -1118,7 +1178,7 @@ router.get("/", auth, loadSalesActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const query = await buildSalesQuery(req.query);
+    const query = await buildSalesQuery(req.query, req.currentUser);
     const [records, total] = await Promise.all([
       SalesRecord.find(query).sort({ salesDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit),
       SalesRecord.countDocuments(query),
@@ -1141,7 +1201,7 @@ router.get("/:id", auth, loadSalesActor, async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Sales record id must be a valid MongoDB ObjectId" });
     }
 
-    const record = await SalesRecord.findById(req.params.id);
+    const record = await getScopedSalesRecord(req.params.id, req.currentUser);
 
     if (!record) {
       return res.status(404).json({ success: false, message: "Sales record not found" });
@@ -1157,6 +1217,12 @@ router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next
   try {
     if (!isValidObjectId(req.params.id)) {
       return res.status(400).json({ success: false, message: "Sales record id must be a valid MongoDB ObjectId" });
+    }
+
+    const existingRecord = await getScopedSalesRecord(req.params.id, req.currentUser);
+
+    if (!existingRecord) {
+      return res.status(404).json({ success: false, message: "Sales record not found" });
     }
 
     const allowedFields = [
@@ -1192,16 +1258,15 @@ router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next
     }
 
     if (update.quantity !== undefined || update.freeQuantity !== undefined) {
-      const current = await SalesRecord.findById(req.params.id).lean();
-      const quantity = update.quantity !== undefined ? Number(update.quantity) : Number(current.quantity || 0);
-      const freeQuantity = update.freeQuantity !== undefined ? Number(update.freeQuantity) : Number(current.freeQuantity || 0);
+      const quantity = update.quantity !== undefined ? Number(update.quantity) : Number(existingRecord.quantity || 0);
+      const freeQuantity = update.freeQuantity !== undefined ? Number(update.freeQuantity) : Number(existingRecord.freeQuantity || 0);
       update.totalQuantityWithFoc = quantity + freeQuantity;
     }
 
     update.updatedBy = req.currentUser._id;
 
     const record = await SalesRecord.findByIdAndUpdate(
-      req.params.id,
+      existingRecord._id,
       { $set: update },
       { new: true, runValidators: true },
     );
@@ -1224,8 +1289,14 @@ router.patch("/:id/status", auth, loadSalesActor, requireManager, async (req, re
       return res.status(400).json({ success: false, message: "status must be active, ignored, duplicate, or error" });
     }
 
+    const existingRecord = await getScopedSalesRecord(req.params.id, req.currentUser);
+
+    if (!existingRecord) {
+      return res.status(404).json({ success: false, message: "Sales record not found" });
+    }
+
     const record = await SalesRecord.findByIdAndUpdate(
-      req.params.id,
+      existingRecord._id,
       { $set: { status, isActive: status === "active", updatedBy: req.currentUser._id } },
       { new: true, runValidators: true },
     );
@@ -1242,8 +1313,14 @@ router.patch("/:id/status", auth, loadSalesActor, requireManager, async (req, re
 
 router.delete("/:id", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
+    const existingRecord = await getScopedSalesRecord(req.params.id, req.currentUser);
+
+    if (!existingRecord) {
+      return res.status(404).json({ success: false, message: "Sales record not found" });
+    }
+
     const record = await SalesRecord.findByIdAndUpdate(
-      req.params.id,
+      existingRecord._id,
       { $set: { status: "ignored", isActive: false, updatedBy: req.currentUser._id } },
       { new: true, runValidators: true },
     );
