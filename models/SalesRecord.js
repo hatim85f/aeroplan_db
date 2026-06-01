@@ -1,0 +1,282 @@
+const mongoose = require("mongoose");
+
+const { Schema } = mongoose;
+
+const salesRecordSchema = new Schema(
+  {
+    salesUploadBatchId: {
+      type: Schema.Types.ObjectId,
+      ref: "SalesUploadBatch",
+      required: true,
+      index: true,
+    },
+    invoiceNumber: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    externalSalesReference: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    rowNumber: {
+      type: Number,
+      min: 0,
+    },
+    salesDate: {
+      type: Date,
+      required: true,
+      index: true,
+    },
+    invoiceDate: {
+      type: Date,
+      index: true,
+    },
+    month: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 12,
+      index: true,
+    },
+    year: {
+      type: Number,
+      required: true,
+      min: 2000,
+      max: 2100,
+      index: true,
+    },
+    uploadDate: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+    accountId: {
+      type: Schema.Types.ObjectId,
+      ref: "Account",
+      index: true,
+    },
+    accountName: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    shipToAccountName: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    accountExternalCode: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    accountMatched: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    productId: {
+      type: Schema.Types.ObjectId,
+      ref: "Product",
+      index: true,
+    },
+    productName: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    productNickname: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    productExternalCode: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    productMatched: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    channelId: {
+      type: Schema.Types.ObjectId,
+      ref: "SalesChannel",
+      index: true,
+    },
+    channelName: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    channelKey: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
+    channelMatched: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    channelDetectionMethod: {
+      type: String,
+      enum: ["sheet_channel", "account_mapping", "price_match", "manual", "unknown"],
+      default: "unknown",
+      index: true,
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    freeQuantity: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    totalQuantityWithFoc: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    uploadedSalesValue: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    uploadedCurrency: {
+      type: String,
+      trim: true,
+      uppercase: true,
+    },
+    calculatedCifUsd: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    calculatedWholesaleAed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    calculatedRetailAed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    unitCifUsd: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    unitWholesaleAed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    unitRetailAed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    targetValueBasis: {
+      type: String,
+      enum: ["cifUsd", "wholesaleAed", "retailAed"],
+    },
+    targetCurrency: {
+      type: String,
+      enum: ["USD", "AED"],
+    },
+    matchedOrderId: {
+      type: Schema.Types.ObjectId,
+      ref: "Order",
+      index: true,
+    },
+    matchedTargetAssignmentIds: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "TargetAssignment",
+        index: true,
+      },
+    ],
+    matchedForecastIds: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "Forecast",
+        index: true,
+      },
+    ],
+    matchStatus: {
+      type: String,
+      enum: ["unmatched", "partially_matched", "matched", "needs_review"],
+      default: "unmatched",
+      index: true,
+    },
+    matchConfidence: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 1,
+    },
+    matchNotes: {
+      type: String,
+      trim: true,
+    },
+    status: {
+      type: String,
+      enum: ["active", "ignored", "duplicate", "error"],
+      default: "active",
+      index: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    rawRow: {
+      type: Schema.Types.Mixed,
+    },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
+    updatedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+  },
+  { timestamps: true },
+);
+
+salesRecordSchema.pre("validate", function calculateTotalQuantity(next) {
+  const quantity = Number(this.quantity || 0);
+  const freeQuantity = Number(this.freeQuantity || 0);
+  this.totalQuantityWithFoc = quantity + freeQuantity;
+  next();
+});
+
+salesRecordSchema.index({ year: 1, month: 1, salesDate: -1 });
+salesRecordSchema.index({ accountId: 1, productId: 1, channelId: 1, salesDate: -1 });
+salesRecordSchema.index({ salesUploadBatchId: 1, rowNumber: 1 });
+salesRecordSchema.index({ matchStatus: 1, status: 1, isActive: 1 });
+salesRecordSchema.index({
+  invoiceNumber: "text",
+  externalSalesReference: "text",
+  accountName: "text",
+  shipToAccountName: "text",
+  accountExternalCode: "text",
+  productName: "text",
+  productNickname: "text",
+  productExternalCode: "text",
+  channelName: "text",
+  channelKey: "text",
+  matchNotes: "text",
+});
+
+module.exports = mongoose.model("SalesRecord", salesRecordSchema);

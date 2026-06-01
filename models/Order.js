@@ -234,8 +234,14 @@ const orderSchema = new Schema(
       default: 0,
       min: 0,
     },
+    invoiceNumber: {
+      type: String,
+      trim: true,
+      index: true,
+    },
     matchedSalesRecordId: {
       type: Schema.Types.ObjectId,
+      ref: "SalesRecord",
     },
     salesSheetMatchedAt: Date,
     salesSheetReference: {
