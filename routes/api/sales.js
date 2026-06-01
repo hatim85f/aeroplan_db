@@ -18,6 +18,11 @@ const MATCH_STATUSES = ["unmatched", "partially_matched", "matched", "needs_revi
 const RECORD_STATUSES = ["active", "ignored", "duplicate", "error"];
 const MAPPING_STATUSES = ["active", "inactive"];
 const PRICE_MATCH_TOLERANCE = 0.03;
+const PRICE_FIELDS = [
+  { field: "cifUsd", currency: "USD" },
+  { field: "wholesaleAed", currency: "AED" },
+  { field: "retailAed", currency: "AED" },
+];
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -306,6 +311,33 @@ const findPricing = (product, channelId) => (product?.channelPricing || []).find
   (pricing) => String(pricing.channelId) === String(channelId) && pricing.isAvailable !== false,
 );
 
+const getComparablePriceFields = (currency) => {
+  const normalizedCurrency = String(currency || "").trim().toUpperCase();
+
+  if (!normalizedCurrency) {
+    return PRICE_FIELDS;
+  }
+
+  const fields = PRICE_FIELDS.filter((priceField) => priceField.currency === normalizedCurrency);
+  return fields.length > 0 ? fields : PRICE_FIELDS;
+};
+
+const detectPriceFieldForPricing = (pricing, uploadedUnitValue, currency) => {
+  if (!pricing || uploadedUnitValue <= 0) {
+    return null;
+  }
+
+  return getComparablePriceFields(currency).find((priceField) => {
+    const unitValue = Number(pricing[priceField.field]) || 0;
+
+    if (unitValue <= 0) {
+      return false;
+    }
+
+    return Math.abs(uploadedUnitValue - unitValue) / unitValue <= PRICE_MATCH_TOLERANCE;
+  }) || null;
+};
+
 const detectSalesChannel = async (row, product) => {
   if (!product) {
     return {
@@ -316,15 +348,26 @@ const detectSalesChannel = async (row, product) => {
     };
   }
 
+  const uploadedUnitValue = row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0;
+
   if (row.channelKey || row.channelName) {
     const query = row.channelKey
       ? { channelKey: normalizeKey(row.channelKey) }
       : { channelName: { $regex: `^${escapeRegex(row.channelName)}$`, $options: "i" } };
     const channel = await SalesChannel.findOne({ ...query, status: "active", isActive: true }).lean();
     const pricing = findPricing(product, channel?._id);
+    const detectedPriceField = detectPriceFieldForPricing(pricing, uploadedUnitValue, row.uploadedCurrency);
 
     if (channel && pricing) {
-      return { channel, pricing, method: "sheet_channel", warning: null };
+      return {
+        channel,
+        pricing,
+        method: "sheet_channel",
+        detectedPriceBasis: detectedPriceField?.field,
+        detectedPriceCurrency: detectedPriceField?.currency,
+        uploadedUnitValue,
+        warning: null,
+      };
     }
 
     if (channel && !pricing) {
@@ -332,31 +375,44 @@ const detectSalesChannel = async (row, product) => {
         channel,
         pricing: null,
         method: "sheet_channel",
+        uploadedUnitValue,
         warning: "Sheet channel matched, but product has no available pricing for that channel",
       };
     }
   }
 
-  const uploadedUnitCif = row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0;
+  const comparablePriceFields = getComparablePriceFields(row.uploadedCurrency);
 
-  if (uploadedUnitCif > 0) {
-    const matches = (product.channelPricing || []).filter((pricing) => {
+  if (uploadedUnitValue > 0) {
+    const matches = (product.channelPricing || []).map((pricing) => {
       if (pricing.isAvailable === false) {
-        return false;
+        return null;
       }
 
-      const unitCifUsd = Number(pricing.cifUsd) || 0;
+      const matchedField = comparablePriceFields.find((priceField) => {
+        const unitValue = Number(pricing[priceField.field]) || 0;
 
-      if (unitCifUsd <= 0) {
-        return false;
-      }
+        if (unitValue <= 0) {
+          return false;
+        }
 
-      return Math.abs(uploadedUnitCif - unitCifUsd) / unitCifUsd <= PRICE_MATCH_TOLERANCE;
-    });
+        return Math.abs(uploadedUnitValue - unitValue) / unitValue <= PRICE_MATCH_TOLERANCE;
+      });
+
+      return matchedField ? { pricing, matchedField } : null;
+    }).filter(Boolean);
 
     if (matches.length === 1) {
-      const channel = await SalesChannel.findById(matches[0].channelId).lean();
-      return { channel, pricing: matches[0], method: "price_match", warning: null };
+      const channel = await SalesChannel.findById(matches[0].pricing.channelId).lean();
+      return {
+        channel,
+        pricing: matches[0].pricing,
+        method: "price_match",
+        detectedPriceBasis: matches[0].matchedField.field,
+        detectedPriceCurrency: matches[0].matchedField.currency,
+        uploadedUnitValue,
+        warning: null,
+      };
     }
 
     if (matches.length > 1) {
@@ -364,7 +420,8 @@ const detectSalesChannel = async (row, product) => {
         channel: null,
         pricing: null,
         method: "price_match",
-        warning: "Multiple sales channels matched by uploaded unit price",
+        uploadedUnitValue,
+        warning: "Multiple sales channels matched by uploaded unit value",
       };
     }
   }
@@ -373,7 +430,8 @@ const detectSalesChannel = async (row, product) => {
     channel: null,
     pricing: null,
     method: "unknown",
-    warning: "Sales channel could not be detected from uploaded CIF unit value",
+    uploadedUnitValue,
+    warning: "Sales channel could not be detected from uploaded unit value and currency",
   };
 };
 
@@ -385,6 +443,20 @@ const buildCalculatedValues = (quantity, pricing) => {
   const unitCifUsd = Number(pricing.cifUsd) || 0;
   const unitWholesaleAed = Number(pricing.wholesaleAed) || 0;
   const unitRetailAed = Number(pricing.retailAed) || 0;
+  const unitPriceSnapshots = PRICE_FIELDS.reduce((snapshots, priceField) => ({
+    ...snapshots,
+    [priceField.field]: {
+      value: Number(pricing[priceField.field]) || 0,
+      currency: priceField.currency,
+    },
+  }), {});
+  const calculatedValueSnapshots = PRICE_FIELDS.reduce((snapshots, priceField) => ({
+    ...snapshots,
+    [priceField.field]: {
+      value: quantity * (Number(pricing[priceField.field]) || 0),
+      currency: priceField.currency,
+    },
+  }), {});
 
   return {
     unitCifUsd,
@@ -393,6 +465,8 @@ const buildCalculatedValues = (quantity, pricing) => {
     calculatedCifUsd: quantity * unitCifUsd,
     calculatedWholesaleAed: quantity * unitWholesaleAed,
     calculatedRetailAed: quantity * unitRetailAed,
+    unitPriceSnapshots,
+    calculatedValueSnapshots,
     targetValueBasis: pricing.targetValueBasis,
     targetCurrency: pricing.targetCurrency,
   };
@@ -630,6 +704,9 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           freeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,
           uploadedCurrency: row.uploadedCurrency,
+          uploadedUnitValue: channelResult.uploadedUnitValue ?? (row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0),
+          detectedPriceBasis: channelResult.detectedPriceBasis,
+          detectedPriceCurrency: channelResult.detectedPriceCurrency,
           ...calculatedValues,
           matchStatus,
           matchConfidence: matchStatus === "matched" ? 0.9 : 0,
@@ -892,6 +969,17 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       groupBy("accountId", "accountName"),
       groupBy("channelId", "channelName"),
     ]);
+    const uploadedSalesByCurrency = await SalesRecord.aggregate([
+      { $match: baseQuery },
+      {
+        $group: {
+          _id: "$uploadedCurrency",
+          totalUploadedSalesValue: { $sum: "$uploadedSalesValue" },
+          recordsCount: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
 
     return res.status(200).json({
       success: true,
@@ -908,6 +996,7 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
         matchedOrdersCount: summary?.matchedOrdersCount || 0,
         unmatchedSalesRecordsCount: summary?.unmatchedSalesRecordsCount || 0,
         needsReviewCount: summary?.needsReviewCount || 0,
+        uploadedSalesByCurrency,
         salesByProduct,
         salesByAccount,
         salesByChannel,
@@ -1230,7 +1319,8 @@ router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next
       "accountId", "accountName", "shipToAccountName", "accountExternalCode", "accountMatched",
       "productId", "productName", "productNickname", "productExternalCode", "productMatched",
       "channelId", "channelName", "channelKey", "channelMatched", "channelDetectionMethod",
-      "quantity", "freeQuantity", "uploadedSalesValue", "uploadedCurrency", "matchStatus",
+      "quantity", "freeQuantity", "uploadedSalesValue", "uploadedCurrency", "uploadedUnitValue",
+      "detectedPriceBasis", "detectedPriceCurrency", "matchStatus",
       "matchConfidence", "matchNotes", "status", "isActive",
     ];
     const update = {};

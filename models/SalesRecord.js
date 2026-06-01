@@ -154,6 +154,19 @@ const salesRecordSchema = new Schema(
       trim: true,
       uppercase: true,
     },
+    uploadedUnitValue: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    detectedPriceBasis: {
+      type: String,
+      enum: ["cifUsd", "wholesaleAed", "retailAed"],
+    },
+    detectedPriceCurrency: {
+      type: String,
+      enum: ["USD", "AED"],
+    },
     calculatedCifUsd: {
       type: Number,
       default: 0,
@@ -183,6 +196,14 @@ const salesRecordSchema = new Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+    unitPriceSnapshots: {
+      type: Schema.Types.Mixed,
+      default: () => ({}),
+    },
+    calculatedValueSnapshots: {
+      type: Schema.Types.Mixed,
+      default: () => ({}),
     },
     targetValueBasis: {
       type: String,
@@ -265,6 +286,7 @@ salesRecordSchema.index({ year: 1, month: 1, salesDate: -1 });
 salesRecordSchema.index({ accountId: 1, productId: 1, channelId: 1, salesDate: -1 });
 salesRecordSchema.index({ salesUploadBatchId: 1, rowNumber: 1 });
 salesRecordSchema.index({ matchStatus: 1, status: 1, isActive: 1 });
+salesRecordSchema.index({ uploadedCurrency: 1, detectedPriceBasis: 1, detectedPriceCurrency: 1 });
 salesRecordSchema.index({
   invoiceNumber: "text",
   externalSalesReference: "text",
