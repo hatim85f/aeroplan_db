@@ -264,6 +264,14 @@ const maybeRecalculateForRule = async (rule, body, user) => {
   return recalculateSharedSales(recalculationInput);
 };
 
+const scheduleRecalculation = (rule, body, user) => {
+  setImmediate(() => {
+    maybeRecalculateForRule(rule, body, user).catch((err) => {
+      console.error("Background recalculation failed for rule", rule._id, err.message);
+    });
+  });
+};
+
 router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {
     const ruleLines = getRuleLines(req.body);
@@ -278,7 +286,6 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
 
     const createdRules = [];
     const failedItems = [];
-    const recalculations = [];
 
     const hasItemArray = Array.isArray(req.body.items) || Array.isArray(req.body.products);
 
@@ -312,7 +319,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       });
 
       createdRules.push(rule);
-      recalculations.push(await maybeRecalculateForRule(rule, req.body, req.currentUser));
+      scheduleRecalculation(rule, req.body, req.currentUser);
     }
 
     return res.status(201).json({
@@ -321,7 +328,6 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       data: {
         rules: createdRules,
         failedItems,
-        recalculations: recalculations.filter(Boolean),
         summary: {
           total: ruleLines.length,
           createdCount: createdRules.length,
@@ -409,12 +415,12 @@ router.patch("/:id", auth, loadActor, requireManager, async (req, res, next) => 
       return res.status(404).json({ success: false, message: "Shared sales rule not found" });
     }
 
-    const recalculation = await maybeRecalculateForRule(rule, req.body, req.currentUser);
+    scheduleRecalculation(rule, req.body, req.currentUser);
 
     return res.status(200).json({
       success: true,
       message: "Shared sales rule updated successfully",
-      data: { rule, recalculation },
+      data: { rule },
     });
   } catch (error) {
     return next(error);
@@ -443,12 +449,12 @@ router.patch("/:id/status", auth, loadActor, requireManager, async (req, res, ne
       return res.status(404).json({ success: false, message: "Shared sales rule not found" });
     }
 
-    const recalculation = await maybeRecalculateForRule(rule, req.body, req.currentUser);
+    scheduleRecalculation(rule, req.body, req.currentUser);
 
     return res.status(200).json({
       success: true,
       message: "Shared sales rule status updated successfully",
-      data: { rule, recalculation },
+      data: { rule },
     });
   } catch (error) {
     return next(error);
@@ -471,12 +477,12 @@ router.delete("/:id", auth, loadActor, requireManager, async (req, res, next) =>
       return res.status(404).json({ success: false, message: "Shared sales rule not found" });
     }
 
-    const recalculation = await maybeRecalculateForRule(rule, req.body, req.currentUser);
+    scheduleRecalculation(rule, req.body, req.currentUser);
 
     return res.status(200).json({
       success: true,
       message: "Shared sales rule deactivated successfully",
-      data: { rule, recalculation },
+      data: { rule },
     });
   } catch (error) {
     return next(error);
