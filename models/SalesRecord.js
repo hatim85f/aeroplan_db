@@ -184,6 +184,12 @@ const salesRecordSchema = new Schema(
       default: "unknown",
       index: true,
     },
+    salesType: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
     quantity: {
       type: Number,
       required: true,
@@ -267,6 +273,16 @@ const salesRecordSchema = new Schema(
     targetCurrency: {
       type: String,
       enum: ["USD", "AED"],
+    },
+    targetUnitValue: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    targetCalculatedValue: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     matchedOrderId: {
       type: Schema.Types.ObjectId,

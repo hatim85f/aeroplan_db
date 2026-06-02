@@ -32,21 +32,48 @@ const CHANNEL_TYPE_FIELD_KEYS = [
   "customerType",
   "privateInstitution",
   "privateOrInstitution",
+  "salesType",
+  "type",
   "sector",
 ];
 const CHANNEL_TYPE_ALIASES = {
   private: {
-    channelKeys: ["direct", "private"],
+    channelKeys: ["direct", "private", "upp"],
     priceFields: ["cifUsd"],
   },
   direct: {
-    channelKeys: ["direct", "private"],
+    channelKeys: ["direct", "private", "upp"],
+    priceFields: ["cifUsd"],
+  },
+  private_sales: {
+    channelKeys: ["direct", "private", "upp"],
+    priceFields: ["cifUsd"],
+  },
+  private_sale: {
+    channelKeys: ["direct", "private", "upp"],
+    priceFields: ["cifUsd"],
+  },
+  prv: {
+    channelKeys: ["direct", "private", "upp"],
+    priceFields: ["cifUsd"],
+  },
+  pvt: {
+    channelKeys: ["direct", "private", "upp"],
     priceFields: ["cifUsd"],
   },
   institution: {
     channelKeys: ["institution", "institutional"],
   },
   institutional: {
+    channelKeys: ["institution", "institutional"],
+  },
+  institute: {
+    channelKeys: ["institution", "institutional"],
+  },
+  inst: {
+    channelKeys: ["institution", "institutional"],
+  },
+  tender: {
     channelKeys: ["institution", "institutional"],
   },
 };
@@ -87,6 +114,20 @@ const parseNumber = (value, defaultValue = 0) => {
   return Number.isFinite(number) ? number : defaultValue;
 };
 
+const parseExcelSerialDate = (value) => {
+  const serial = Number(value);
+
+  if (!Number.isFinite(serial) || serial < 1 || serial > 100000) {
+    return null;
+  }
+
+  const utcDays = Math.floor(serial - 25569);
+  const utcValue = utcDays * 86400;
+  const date = new Date(utcValue * 1000);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
 const parseDate = (value, fieldName = "date") => {
   if (value === undefined || value === null || value === "") {
     return null;
@@ -97,11 +138,30 @@ const parseDate = (value, fieldName = "date") => {
   }
 
   const normalizedValue = String(value).trim();
+  const excelSerialDate = parseExcelSerialDate(normalizedValue);
+
+  if (excelSerialDate) {
+    return excelSerialDate;
+  }
+
   const isoDateOnlyMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
 
   if (isoDateOnlyMatch) {
     const [, year, month, day] = isoDateOnlyMatch;
     return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  }
+
+  const slashDateMatch = normalizedValue.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+
+  if (slashDateMatch) {
+    const [, firstPart, secondPart, yearPart] = slashDateMatch;
+    const year = Number(yearPart.length === 2 ? `20${yearPart}` : yearPart);
+    const first = Number(firstPart);
+    const second = Number(secondPart);
+    const day = first > 12 ? first : second;
+    const month = first > 12 ? second : first;
+
+    return new Date(Date.UTC(year, month - 1, day));
   }
 
   const date = new Date(normalizedValue);
@@ -227,7 +287,9 @@ const normalizeUploadColumnMapping = (body = {}, mapping = null) => {
     || body.salesChannelTypeColumn
     || body.customerTypeColumn
     || body.privateInstitutionColumn
-    || body.privateOrInstitutionColumn;
+    || body.privateOrInstitutionColumn
+    || body.salesTypeColumn
+    || body.typeColumn;
 
   if (channelTypeColumn && !columnMapping.channelType) {
     columnMapping.channelType = channelTypeColumn;
@@ -390,7 +452,11 @@ const getChannelTypeHint = (value) => {
     return null;
   }
 
-  const alias = CHANNEL_TYPE_ALIASES[normalizedValue];
+  const alias = CHANNEL_TYPE_ALIASES[normalizedValue]
+    || (normalizedValue.includes("private") ? CHANNEL_TYPE_ALIASES.private : null)
+    || (normalizedValue.includes("direct") ? CHANNEL_TYPE_ALIASES.direct : null)
+    || (normalizedValue.includes("institution") ? CHANNEL_TYPE_ALIASES.institution : null)
+    || (normalizedValue.includes("institute") ? CHANNEL_TYPE_ALIASES.institution : null);
 
   return {
     rawValue: value,
@@ -407,6 +473,22 @@ const pricingMatchesChannelHint = (pricing, hint) => {
 
   const pricingKey = normalizeKey(pricing?.channelKey || pricing?.channelName);
   return hint.channelKeys.some((channelKey) => pricingKey === normalizeKey(channelKey));
+};
+
+const pricingMatchesUploadedCurrency = (pricing, currency) => {
+  const normalizedCurrency = String(currency || "").trim().toUpperCase();
+
+  if (!normalizedCurrency) {
+    return true;
+  }
+
+  const targetCurrency = String(pricing?.targetCurrency || "").trim().toUpperCase();
+
+  if (targetCurrency) {
+    return targetCurrency === normalizedCurrency;
+  }
+
+  return true;
 };
 
 const priceValuesMatch = (uploadedUnitValue, unitValue) => {
@@ -504,6 +586,10 @@ const detectSalesChannel = async (row, product) => {
         return null;
       }
 
+      if (channelTypeHint?.priceFields?.includes("cifUsd") && !pricingMatchesUploadedCurrency(pricing, row.uploadedCurrency)) {
+        return null;
+      }
+
       const matchedField = comparablePriceFields.find((priceField) => {
         const unitValue = Number(pricing[priceField.field]) || 0;
 
@@ -562,6 +648,9 @@ const buildCalculatedValues = (quantity, pricing) => {
   const unitCifUsd = Number(pricing.cifUsd) || 0;
   const unitWholesaleAed = Number(pricing.wholesaleAed) || 0;
   const unitRetailAed = Number(pricing.retailAed) || 0;
+  const targetValueBasis = pricing.targetValueBasis || "cifUsd";
+  const targetCurrency = pricing.targetCurrency || (targetValueBasis === "cifUsd" ? "USD" : "AED");
+  const targetUnitValue = Number(pricing[targetValueBasis]) || 0;
   const unitPriceSnapshots = PRICE_FIELDS.reduce((snapshots, priceField) => ({
     ...snapshots,
     [priceField.field]: {
@@ -586,8 +675,10 @@ const buildCalculatedValues = (quantity, pricing) => {
     calculatedRetailAed: quantity * unitRetailAed,
     unitPriceSnapshots,
     calculatedValueSnapshots,
-    targetValueBasis: pricing.targetValueBasis,
-    targetCurrency: pricing.targetCurrency,
+    targetValueBasis,
+    targetCurrency,
+    targetUnitValue,
+    targetCalculatedValue: quantity * targetUnitValue,
   };
 };
 
@@ -823,7 +914,11 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           year: Number(req.body.year),
           uploadedCurrency: req.body.uploadedCurrency,
           currency: req.body.currency,
-          channelType: req.body.channelType || req.body.marketType || req.body.privateInstitution,
+          channelType: req.body.channelType
+            || req.body.marketType
+            || req.body.salesType
+            || req.body.privateInstitution
+            || req.body.privateOrInstitution,
         });
         const rowValidationError = validateSalesRow(row);
 
@@ -892,6 +987,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           channelKey: channelResult.channel?.channelKey || normalizeKey(row.channelKey),
           channelMatched,
           channelDetectionMethod: channelResult.method,
+          salesType: getChannelTypeHint(row.channelType)?.normalizedValue,
           quantity: row.quantity,
           freeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,
@@ -1362,6 +1458,7 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
           totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
           totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+          totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
           recordsCount: { $sum: 1 },
           matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
           unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
@@ -1436,6 +1533,7 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
         totalCalculatedCifUsd: summary?.totalCalculatedCifUsd || 0,
         totalCalculatedWholesaleAed: summary?.totalCalculatedWholesaleAed || 0,
         totalCalculatedRetailAed: summary?.totalCalculatedRetailAed || 0,
+        totalTargetCalculatedValue: summary?.totalTargetCalculatedValue || 0,
         recordsCount: summary?.recordsCount || 0,
         matchedOrdersCount: summary?.matchedOrdersCount || 0,
         unmatchedSalesRecordsCount: summary?.unmatchedSalesRecordsCount || 0,
@@ -1777,8 +1875,10 @@ router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next
       "accountId", "accountName", "shipToAccountName", "accountExternalCode", "accountMatched",
       "productId", "productName", "productNickname", "productExternalCode", "productMatched",
       "channelId", "channelName", "channelKey", "channelMatched", "channelDetectionMethod",
+      "salesType",
       "quantity", "freeQuantity", "uploadedSalesValue", "uploadedCurrency", "uploadedUnitValue",
       "detectedPriceBasis", "detectedPriceCurrency", "matchStatus",
+      "targetValueBasis", "targetCurrency", "targetUnitValue", "targetCalculatedValue",
       "matchConfidence", "matchNotes", "status", "isActive",
     ];
     const update = {};
