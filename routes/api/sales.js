@@ -835,10 +835,8 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       return res.status(400).json({ success: false, message: validationError });
     }
 
-    for (const field of ["accountId", "productId", "channelId"]) {
-      if (!req.body[field] || !isValidObjectId(req.body[field])) {
-        return res.status(400).json({ success: false, message: `${field} must be a valid MongoDB ObjectId` });
-      }
+    if (!req.body.accountId || !isValidObjectId(req.body.accountId)) {
+      return res.status(400).json({ success: false, message: "accountId must be a valid MongoDB ObjectId" });
     }
 
     const salesDate = parseDate(req.body.salesDate, "salesDate");
@@ -847,104 +845,193 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       return res.status(400).json({ success: false, message: "salesDate is required" });
     }
 
-    const quantity = Number(req.body.quantity);
-    const freeQuantity = Number(req.body.freeQuantity || 0);
+    const manualItems = Array.isArray(req.body.products)
+      ? req.body.products
+      : Array.isArray(req.body.items)
+        ? req.body.items
+        : [
+          {
+            productId: req.body.productId,
+            channelId: req.body.channelId,
+            quantity: req.body.quantity,
+            freeQuantity: req.body.freeQuantity,
+            uploadedSalesValue: req.body.uploadedSalesValue,
+            uploadedCurrency: req.body.uploadedCurrency,
+            invoiceNumber: req.body.invoiceNumber,
+            externalSalesReference: req.body.externalSalesReference,
+            productExternalCode: req.body.productExternalCode,
+            notes: req.body.notes,
+          },
+        ];
 
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      return res.status(400).json({ success: false, message: "quantity must be a number greater than 0" });
+    if (!Array.isArray(manualItems) || manualItems.length === 0) {
+      return res.status(400).json({ success: false, message: "products must be a non-empty array" });
     }
 
-    const [account, product, channel] = await Promise.all([
-      Account.findById(req.body.accountId).lean(),
-      Product.findOne({ _id: req.body.productId, status: "active", isActive: true }).lean(),
-      SalesChannel.findOne({ _id: req.body.channelId, status: "active", isActive: true }).lean(),
-    ]);
+    if (manualItems.length > 200) {
+      return res.status(400).json({ success: false, message: "products cannot contain more than 200 items" });
+    }
+
+    const account = await Account.findById(req.body.accountId).lean();
 
     if (!account) {
       return res.status(404).json({ success: false, message: "Account not found" });
     }
 
-    if (!product) {
-      return res.status(404).json({ success: false, message: "Product not found or inactive" });
-    }
-
-    if (!channel) {
-      return res.status(404).json({ success: false, message: "Sales channel not found or inactive" });
-    }
-
-    const pricing = findPricing(product, channel._id);
-
-    if (!pricing) {
-      return res.status(400).json({
-        success: false,
-        message: "Product has no available pricing for the selected sales channel",
-      });
-    }
-
-    const uploadedSalesValue = parseNumber(req.body.uploadedSalesValue, 0);
-    const uploadedCurrency = String(req.body.uploadedCurrency || "").trim().toUpperCase();
-    const uploadedUnitValue = quantity > 0 ? uploadedSalesValue / quantity : 0;
-    const detectedPriceField = detectPriceFieldForPricing(pricing, uploadedUnitValue, uploadedCurrency);
-    const calculatedValues = buildCalculatedValues(quantity, pricing);
     const batch = await SalesUploadBatch.create({
-      fileName: "Manual sales entry",
+      fileName: req.body.fileName || "Manual sales entry",
       uploadedBy: req.currentUser._id,
       month: Number(req.body.month),
       year: Number(req.body.year),
-      totalRows: 1,
-      successfulRows: 1,
-      status: "completed",
+      totalRows: manualItems.length,
+      status: "processing",
       notes: req.body.notes,
     });
-    const record = await SalesRecord.create({
-      salesUploadBatchId: batch._id,
-      entrySource: "manual",
-      invoiceNumber: req.body.invoiceNumber,
-      externalSalesReference: req.body.externalSalesReference,
-      rowNumber: 1,
-      salesDate,
-      invoiceDate: parseDate(req.body.invoiceDate, "invoiceDate"),
-      month: Number(req.body.month),
-      year: Number(req.body.year),
-      uploadDate: new Date(),
-      accountId: account._id,
-      accountName: account.accountName,
-      shipToAccountName: req.body.shipToAccountName,
-      accountExternalCode: req.body.accountExternalCode,
-      accountMatched: true,
-      productId: product._id,
-      productName: product.productName,
-      productNickname: product.productNickname,
-      productExternalCode: req.body.productExternalCode,
-      productMatched: true,
-      channelId: channel._id,
-      channelName: channel.channelName,
-      channelKey: channel.channelKey,
-      channelMatched: true,
-      channelDetectionMethod: "manual",
-      quantity,
-      freeQuantity,
-      uploadedSalesValue,
-      uploadedCurrency,
-      uploadedUnitValue,
-      detectedPriceBasis: detectedPriceField?.field,
-      detectedPriceCurrency: detectedPriceField?.currency,
-      ...calculatedValues,
-      matchStatus: "matched",
-      matchConfidence: 1,
-      matchNotes: req.body.notes,
-      rawRow: req.body,
-      createdBy: req.currentUser._id,
-      updatedBy: req.currentUser._id,
-    });
+    const records = [];
+    const failedItems = [];
 
-    await applySharedSalesToRecord(record);
-    await record.save();
+    for (const [index, item] of manualItems.entries()) {
+      const rowNumber = index + 1;
+      const itemChannelId = item.channelId || req.body.channelId;
+
+      if (!item.productId || !isValidObjectId(item.productId)) {
+        failedItems.push({ index, rowNumber, productId: item.productId, reason: "productId must be a valid MongoDB ObjectId" });
+        continue;
+      }
+
+      if (!itemChannelId || !isValidObjectId(itemChannelId)) {
+        failedItems.push({ index, rowNumber, productId: item.productId, reason: "channelId must be a valid MongoDB ObjectId" });
+        continue;
+      }
+
+      const quantity = Number(item.quantity);
+      const freeQuantity = Number(item.freeQuantity || 0);
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        failedItems.push({ index, rowNumber, productId: item.productId, reason: "quantity must be a number greater than 0" });
+        continue;
+      }
+
+      try {
+        const [product, channel] = await Promise.all([
+          Product.findOne({ _id: item.productId, status: "active", isActive: true }).lean(),
+          SalesChannel.findOne({ _id: itemChannelId, status: "active", isActive: true }).lean(),
+        ]);
+
+        if (!product) {
+          failedItems.push({ index, rowNumber, productId: item.productId, reason: "Product not found or inactive" });
+          continue;
+        }
+
+        if (!channel) {
+          failedItems.push({ index, rowNumber, productId: item.productId, channelId: itemChannelId, reason: "Sales channel not found or inactive" });
+          continue;
+        }
+
+        const pricing = findPricing(product, channel._id);
+
+        if (!pricing) {
+          failedItems.push({
+            index,
+            rowNumber,
+            productId: item.productId,
+            channelId: itemChannelId,
+            reason: "Product has no available pricing for the selected sales channel",
+          });
+          continue;
+        }
+
+        const uploadedSalesValue = parseNumber(item.uploadedSalesValue, 0);
+        const uploadedCurrency = String(item.uploadedCurrency || req.body.uploadedCurrency || "").trim().toUpperCase();
+        const uploadedUnitValue = quantity > 0 ? uploadedSalesValue / quantity : 0;
+        const detectedPriceField = detectPriceFieldForPricing(pricing, uploadedUnitValue, uploadedCurrency);
+        const calculatedValues = buildCalculatedValues(quantity, pricing);
+        const record = await SalesRecord.create({
+          salesUploadBatchId: batch._id,
+          entrySource: "manual",
+          invoiceNumber: item.invoiceNumber || req.body.invoiceNumber,
+          externalSalesReference: item.externalSalesReference || req.body.externalSalesReference,
+          rowNumber,
+          salesDate,
+          invoiceDate: parseDate(item.invoiceDate || req.body.invoiceDate, "invoiceDate"),
+          month: Number(req.body.month),
+          year: Number(req.body.year),
+          uploadDate: new Date(),
+          accountId: account._id,
+          accountName: account.accountName,
+          shipToAccountName: item.shipToAccountName || req.body.shipToAccountName,
+          accountExternalCode: item.accountExternalCode || req.body.accountExternalCode,
+          accountMatched: true,
+          productId: product._id,
+          productName: product.productName,
+          productNickname: product.productNickname,
+          productExternalCode: item.productExternalCode,
+          productMatched: true,
+          channelId: channel._id,
+          channelName: channel.channelName,
+          channelKey: channel.channelKey,
+          channelMatched: true,
+          channelDetectionMethod: "manual",
+          quantity,
+          freeQuantity,
+          uploadedSalesValue,
+          uploadedCurrency,
+          uploadedUnitValue,
+          detectedPriceBasis: detectedPriceField?.field,
+          detectedPriceCurrency: detectedPriceField?.currency,
+          ...calculatedValues,
+          matchStatus: "matched",
+          matchConfidence: 1,
+          matchNotes: item.notes || req.body.notes,
+          rawRow: {
+            ...req.body,
+            products: undefined,
+            items: undefined,
+            item,
+          },
+          createdBy: req.currentUser._id,
+          updatedBy: req.currentUser._id,
+        });
+
+        await applySharedSalesToRecord(record);
+        await record.save();
+        records.push(record);
+      } catch (error) {
+        failedItems.push({
+          index,
+          rowNumber,
+          productId: item.productId,
+          reason: error.message || "Failed to create manual sales record",
+        });
+      }
+    }
+
+    batch.successfulRows = records.length;
+    batch.failedRows = failedItems.length;
+    batch.matchedRows = records.length;
+    batch.errors = failedItems.map((failure) => ({
+      rowNumber: failure.rowNumber,
+      message: failure.reason,
+      rawRow: manualItems[failure.index],
+    }));
+    batch.status = failedItems.length > 0
+      ? records.length > 0 ? "completed_with_errors" : "failed"
+      : "completed";
+    await batch.save();
 
     return res.status(201).json({
       success: true,
-      message: "Manual sales record created successfully",
-      data: record,
+      message: "Manual sales input processed",
+      data: {
+        batch,
+        records,
+        failedItems,
+        summary: {
+          total: manualItems.length,
+          createdCount: records.length,
+          failedCount: failedItems.length,
+        },
+      },
     });
   } catch (error) {
     return next(error);
@@ -1030,7 +1117,7 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
       }
 
       const order = orders[0];
-      const orderItem = order.items.find((item) => String(item.productId) === String(record.productId));
+      const orderItem = order.items.find((orderItem) => String(orderItem.productId) === String(record.productId));
       const quantityConfidence = orderItem && Number(orderItem.quantity) === Number(record.quantity) ? 0.2 : 0;
       const invoiceConfidence = record.invoiceNumber && order.invoiceNumber === record.invoiceNumber ? 0.2 : 0;
 
