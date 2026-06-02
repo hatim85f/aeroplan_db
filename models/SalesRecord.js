@@ -2,12 +2,67 @@ const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
 
+const areaShareSchema = new Schema(
+  {
+    areaId: {
+      type: Schema.Types.ObjectId,
+      ref: "Area",
+      index: true,
+    },
+    areaName: {
+      type: String,
+      trim: true,
+    },
+    sharePercentage: {
+      type: Number,
+      min: 0,
+      max: 100,
+    },
+    sharedQuantity: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    sharedFreeQuantity: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    sharedCalculatedCifUsd: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    sharedCalculatedWholesaleAed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    sharedCalculatedRetailAed: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    ruleId: {
+      type: Schema.Types.ObjectId,
+      ref: "SharedSalesRule",
+    },
+  },
+  { _id: false },
+);
+
 const salesRecordSchema = new Schema(
   {
     salesUploadBatchId: {
       type: Schema.Types.ObjectId,
       ref: "SalesUploadBatch",
       required: true,
+      index: true,
+    },
+    entrySource: {
+      type: String,
+      enum: ["upload", "manual"],
+      default: "upload",
       index: true,
     },
     invoiceNumber: {
@@ -261,6 +316,15 @@ const salesRecordSchema = new Schema(
     },
     rawRow: {
       type: Schema.Types.Mixed,
+    },
+    areaShares: {
+      type: [areaShareSchema],
+      default: [],
+    },
+    sharedSalesApplied: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     createdBy: {
       type: Schema.Types.ObjectId,

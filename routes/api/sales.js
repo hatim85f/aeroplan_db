@@ -10,6 +10,7 @@ const SalesSheetMapping = require("../../models/SalesSheetMapping");
 const SalesUploadBatch = require("../../models/SalesUploadBatch");
 const TargetAssignment = require("../../models/TargetAssignment");
 const User = require("../../models/User");
+const { applySharedSalesToRecord, recalculateSharedSales } = require("../../helpers/sharedSales");
 const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
@@ -17,6 +18,7 @@ const router = express.Router();
 const MATCH_STATUSES = ["unmatched", "partially_matched", "matched", "needs_review"];
 const RECORD_STATUSES = ["active", "ignored", "duplicate", "error"];
 const MAPPING_STATUSES = ["active", "inactive"];
+const UPLOAD_MODES = ["override", "amend"];
 const PRICE_MATCH_TOLERANCE = 0.03;
 const PRICE_FIELDS = [
   { field: "cifUsd", currency: "USD" },
@@ -513,6 +515,20 @@ const buildSalesQuery = async (queryParams, user) => {
     query.status = queryParams.status;
   }
 
+  if (queryParams.entrySource) {
+    query.entrySource = String(queryParams.entrySource).trim().toLowerCase();
+  }
+
+  if (queryParams.sharedSalesApplied !== undefined) {
+    query.sharedSalesApplied = normalizeBoolean(queryParams.sharedSalesApplied, false);
+  }
+
+  if (queryParams.areaId) {
+    query["areaShares.areaId"] = isValidObjectId(queryParams.areaId)
+      ? new mongoose.Types.ObjectId(queryParams.areaId)
+      : null;
+  }
+
   ["accountMatched", "productMatched", "channelMatched"].forEach((field) => {
     if (queryParams[field] !== undefined) {
       query[field] = normalizeBoolean(queryParams[field], false);
@@ -596,6 +612,35 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
       return res.status(400).json({ success: false, message: "rows must be a non-empty array" });
     }
 
+    const uploadMode = req.body.uploadMode
+      ? String(req.body.uploadMode).trim().toLowerCase()
+      : undefined;
+
+    if (uploadMode && !UPLOAD_MODES.includes(uploadMode)) {
+      return res.status(400).json({ success: false, message: "uploadMode must be override or amend" });
+    }
+
+    const existingActiveSalesCount = await SalesRecord.countDocuments({
+      year: Number(req.body.year),
+      month: Number(req.body.month),
+      status: "active",
+      isActive: true,
+    });
+
+    if (existingActiveSalesCount > 0 && !uploadMode) {
+      const existingBatches = await SalesUploadBatch.find({
+        year: Number(req.body.year),
+        month: Number(req.body.month),
+      }).sort({ uploadDate: -1 }).limit(10).lean();
+
+      return res.status(409).json({
+        success: false,
+        requiresConfirmation: true,
+        message: "Sales data already exists for this month/year. Choose override or amend.",
+        existingBatches,
+      });
+    }
+
     let mapping = null;
 
     if (req.body.mappingId) {
@@ -617,8 +662,34 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
       totalRows: req.body.rows.length,
       status: "processing",
       columnMapping,
-      notes: req.body.notes,
+      notes: [req.body.notes, `Upload mode: ${uploadMode || "amend"}`].filter(Boolean).join(" | "),
     });
+
+    if (uploadMode === "override") {
+      await SalesRecord.updateMany(
+        {
+          year: Number(req.body.year),
+          month: Number(req.body.month),
+          status: "active",
+          isActive: true,
+        },
+        {
+          $set: {
+            status: "ignored",
+            isActive: false,
+            updatedBy: req.currentUser._id,
+          },
+        },
+      );
+      await SalesUploadBatch.updateMany(
+        {
+          _id: { $ne: batch._id },
+          year: Number(req.body.year),
+          month: Number(req.body.month),
+        },
+        { $set: { notes: `Overridden by batch ${batch._id}` } },
+      );
+    }
     const createdRecords = [];
     const failed = [];
     const unmatched = [];
@@ -677,6 +748,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
 
         const record = await SalesRecord.create({
           salesUploadBatchId: batch._id,
+          entrySource: "upload",
           invoiceNumber: row.invoiceNumber,
           externalSalesReference: row.externalSalesReference,
           rowNumber,
@@ -718,6 +790,9 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           updatedBy: req.currentUser._id,
         });
 
+        await applySharedSalesToRecord(record);
+        await record.save();
+
         createdRecords.push(record);
       } catch (error) {
         failed.push({ rowNumber, message: error.message || "Failed to import row", rawRow });
@@ -746,6 +821,147 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         unmatchedRows: unmatched,
         warnings,
       },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const validationError = validateMonthYear(req.body.month, req.body.year);
+
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
+
+    for (const field of ["accountId", "productId", "channelId"]) {
+      if (!req.body[field] || !isValidObjectId(req.body[field])) {
+        return res.status(400).json({ success: false, message: `${field} must be a valid MongoDB ObjectId` });
+      }
+    }
+
+    const salesDate = parseDate(req.body.salesDate, "salesDate");
+
+    if (!salesDate) {
+      return res.status(400).json({ success: false, message: "salesDate is required" });
+    }
+
+    const quantity = Number(req.body.quantity);
+    const freeQuantity = Number(req.body.freeQuantity || 0);
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return res.status(400).json({ success: false, message: "quantity must be a number greater than 0" });
+    }
+
+    const [account, product, channel] = await Promise.all([
+      Account.findById(req.body.accountId).lean(),
+      Product.findOne({ _id: req.body.productId, status: "active", isActive: true }).lean(),
+      SalesChannel.findOne({ _id: req.body.channelId, status: "active", isActive: true }).lean(),
+    ]);
+
+    if (!account) {
+      return res.status(404).json({ success: false, message: "Account not found" });
+    }
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found or inactive" });
+    }
+
+    if (!channel) {
+      return res.status(404).json({ success: false, message: "Sales channel not found or inactive" });
+    }
+
+    const pricing = findPricing(product, channel._id);
+
+    if (!pricing) {
+      return res.status(400).json({
+        success: false,
+        message: "Product has no available pricing for the selected sales channel",
+      });
+    }
+
+    const uploadedSalesValue = parseNumber(req.body.uploadedSalesValue, 0);
+    const uploadedCurrency = String(req.body.uploadedCurrency || "").trim().toUpperCase();
+    const uploadedUnitValue = quantity > 0 ? uploadedSalesValue / quantity : 0;
+    const detectedPriceField = detectPriceFieldForPricing(pricing, uploadedUnitValue, uploadedCurrency);
+    const calculatedValues = buildCalculatedValues(quantity, pricing);
+    const batch = await SalesUploadBatch.create({
+      fileName: "Manual sales entry",
+      uploadedBy: req.currentUser._id,
+      month: Number(req.body.month),
+      year: Number(req.body.year),
+      totalRows: 1,
+      successfulRows: 1,
+      status: "completed",
+      notes: req.body.notes,
+    });
+    const record = await SalesRecord.create({
+      salesUploadBatchId: batch._id,
+      entrySource: "manual",
+      invoiceNumber: req.body.invoiceNumber,
+      externalSalesReference: req.body.externalSalesReference,
+      rowNumber: 1,
+      salesDate,
+      invoiceDate: parseDate(req.body.invoiceDate, "invoiceDate"),
+      month: Number(req.body.month),
+      year: Number(req.body.year),
+      uploadDate: new Date(),
+      accountId: account._id,
+      accountName: account.accountName,
+      shipToAccountName: req.body.shipToAccountName,
+      accountExternalCode: req.body.accountExternalCode,
+      accountMatched: true,
+      productId: product._id,
+      productName: product.productName,
+      productNickname: product.productNickname,
+      productExternalCode: req.body.productExternalCode,
+      productMatched: true,
+      channelId: channel._id,
+      channelName: channel.channelName,
+      channelKey: channel.channelKey,
+      channelMatched: true,
+      channelDetectionMethod: "manual",
+      quantity,
+      freeQuantity,
+      uploadedSalesValue,
+      uploadedCurrency,
+      uploadedUnitValue,
+      detectedPriceBasis: detectedPriceField?.field,
+      detectedPriceCurrency: detectedPriceField?.currency,
+      ...calculatedValues,
+      matchStatus: "matched",
+      matchConfidence: 1,
+      matchNotes: req.body.notes,
+      rawRow: req.body,
+      createdBy: req.currentUser._id,
+      updatedBy: req.currentUser._id,
+    });
+
+    await applySharedSalesToRecord(record);
+    await record.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Manual sales record created successfully",
+      data: record,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/recalculate-shared-sales", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const result = await recalculateSharedSales({
+      ...req.body,
+      updatedBy: req.currentUser._id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Shared sales recalculation completed",
+      data: result,
     });
   } catch (error) {
     return next(error);
@@ -946,6 +1162,27 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
         },
       },
     ]);
+    const areaObjectId = req.query.areaId && isValidObjectId(req.query.areaId)
+      ? new mongoose.Types.ObjectId(req.query.areaId)
+      : null;
+    const [areaSummary] = areaObjectId
+      ? await SalesRecord.aggregate([
+        { $match: baseQuery },
+        { $unwind: "$areaShares" },
+        { $match: { "areaShares.areaId": areaObjectId } },
+        {
+          $group: {
+            _id: "$areaShares.areaId",
+            areaName: { $first: "$areaShares.areaName" },
+            totalSharedQuantity: { $sum: "$areaShares.sharedQuantity" },
+            totalSharedFreeQuantity: { $sum: "$areaShares.sharedFreeQuantity" },
+            totalSharedCalculatedCifUsd: { $sum: "$areaShares.sharedCalculatedCifUsd" },
+            totalSharedCalculatedWholesaleAed: { $sum: "$areaShares.sharedCalculatedWholesaleAed" },
+            totalSharedCalculatedRetailAed: { $sum: "$areaShares.sharedCalculatedRetailAed" },
+          },
+        },
+      ])
+      : [null];
 
     const groupBy = async (idField, nameField) => SalesRecord.aggregate([
       { $match: baseQuery },
@@ -996,6 +1233,12 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
         matchedOrdersCount: summary?.matchedOrdersCount || 0,
         unmatchedSalesRecordsCount: summary?.unmatchedSalesRecordsCount || 0,
         needsReviewCount: summary?.needsReviewCount || 0,
+        totalSharedQuantity: areaSummary?.totalSharedQuantity || 0,
+        totalSharedFreeQuantity: areaSummary?.totalSharedFreeQuantity || 0,
+        totalSharedCalculatedCifUsd: areaSummary?.totalSharedCalculatedCifUsd || 0,
+        totalSharedCalculatedWholesaleAed: areaSummary?.totalSharedCalculatedWholesaleAed || 0,
+        totalSharedCalculatedRetailAed: areaSummary?.totalSharedCalculatedRetailAed || 0,
+        areaShare: areaSummary || null,
         uploadedSalesByCurrency,
         salesByProduct,
         salesByAccount,
@@ -1269,14 +1512,22 @@ router.get("/", auth, loadSalesActor, async (req, res, next) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const query = await buildSalesQuery(req.query, req.currentUser);
     const [records, total] = await Promise.all([
-      SalesRecord.find(query).sort({ salesDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      SalesRecord.find(query).sort({ salesDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       SalesRecord.countDocuments(query),
     ]);
+    const data = req.query.areaId && isValidObjectId(req.query.areaId)
+      ? records.map((record) => ({
+        ...record,
+        matchingAreaShare: (record.areaShares || []).find((areaShare) => (
+          String(areaShare.areaId) === String(req.query.areaId)
+        )) || null,
+      }))
+      : records;
 
     return res.status(200).json({
       success: true,
       message: "Sales records fetched successfully",
-      data: records,
+      data,
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
   } catch (error) {
@@ -1364,6 +1615,9 @@ router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next
     if (!record) {
       return res.status(404).json({ success: false, message: "Sales record not found" });
     }
+
+    await applySharedSalesToRecord(record);
+    await record.save();
 
     return res.status(200).json({ success: true, message: "Sales record updated successfully", data: record });
   } catch (error) {
