@@ -99,6 +99,33 @@ const normalizeRulePayload = (body = {}) => {
   return payload;
 };
 
+const normalizeRuleLinePayload = (body = {}, item = {}) => {
+  const payload = normalizeRulePayload({
+    ...body,
+    ...item,
+    productId: item.productId || item.itemId || body.productId || body.itemId,
+    channelId: item.channelId || body.channelId,
+    sharePercentage: item.sharePercentage ?? body.sharePercentage,
+    notes: item.notes || body.notes,
+  });
+
+  return payload;
+};
+
+const getRuleLines = (body = {}) => {
+  const items = Array.isArray(body.items)
+    ? body.items
+    : Array.isArray(body.products)
+      ? body.products
+      : null;
+
+  if (!items) {
+    return [normalizeRuleLinePayload(body)];
+  }
+
+  return items.map((item) => normalizeRuleLinePayload(body, item));
+};
+
 const validateRulePayload = async (payload, { partial = false } = {}) => {
   if (!partial && !payload.areaId) {
     return "areaId is required";
@@ -239,26 +266,68 @@ const maybeRecalculateForRule = async (rule, body, user) => {
 
 router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    const payload = normalizeRulePayload(req.body);
-    const validationError = await validateRulePayload(payload);
+    const ruleLines = getRuleLines(req.body);
 
-    if (validationError) {
-      return res.status(400).json({ success: false, message: validationError });
+    if (ruleLines.length === 0) {
+      return res.status(400).json({ success: false, message: "items must be a non-empty array" });
     }
 
-    const rule = await SharedSalesRule.create({
-      ...payload,
-      status: payload.status || "active",
-      isActive: payload.isActive !== undefined ? payload.isActive : true,
-      createdBy: req.currentUser._id,
-      updatedBy: req.currentUser._id,
-    });
-    const recalculation = await maybeRecalculateForRule(rule, req.body, req.currentUser);
+    if (ruleLines.length > 300) {
+      return res.status(400).json({ success: false, message: "items cannot contain more than 300 rows" });
+    }
+
+    const createdRules = [];
+    const failedItems = [];
+    const recalculations = [];
+
+    const hasItemArray = Array.isArray(req.body.items) || Array.isArray(req.body.products);
+
+    for (const [index, payload] of ruleLines.entries()) {
+      if (hasItemArray && !payload.productId) {
+        failedItems.push({
+          index,
+          item: Array.isArray(req.body.items) ? req.body.items[index] : req.body.products[index],
+          reason: "itemId or productId is required for each item row",
+        });
+        continue;
+      }
+
+      const validationError = await validateRulePayload(payload);
+
+      if (validationError) {
+        failedItems.push({
+          index,
+          item: Array.isArray(req.body.items) ? req.body.items[index] : Array.isArray(req.body.products) ? req.body.products[index] : req.body,
+          reason: validationError,
+        });
+        continue;
+      }
+
+      const rule = await SharedSalesRule.create({
+        ...payload,
+        status: payload.status || "active",
+        isActive: payload.isActive !== undefined ? payload.isActive : true,
+        createdBy: req.currentUser._id,
+        updatedBy: req.currentUser._id,
+      });
+
+      createdRules.push(rule);
+      recalculations.push(await maybeRecalculateForRule(rule, req.body, req.currentUser));
+    }
 
     return res.status(201).json({
       success: true,
-      message: "Shared sales rule created successfully",
-      data: { rule, recalculation },
+      message: "Shared sales rules processed successfully",
+      data: {
+        rules: createdRules,
+        failedItems,
+        recalculations: recalculations.filter(Boolean),
+        summary: {
+          total: ruleLines.length,
+          createdCount: createdRules.length,
+          failedCount: failedItems.length,
+        },
+      },
     });
   } catch (error) {
     return next(error);
