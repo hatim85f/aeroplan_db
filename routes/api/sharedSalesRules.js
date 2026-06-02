@@ -561,20 +561,25 @@ router.delete("/:id", auth, loadActor, requireManager, async (req, res, next) =>
       });
     }
 
-    const wasActive = existingRule.status !== "inactive" || existingRule.isActive !== false;
-    existingRule.status = "inactive";
-    existingRule.isActive = false;
-    existingRule.updatedBy = req.currentUser._id;
-    await existingRule.save();
+    const deletedRuleSnapshot = existingRule.toObject();
+    const deleteResult = await SharedSalesRule.deleteOne({ _id: existingRule._id });
+    const deletedCount = deleteResult.deletedCount || 0;
 
-    scheduleRecalculation(existingRule, req.body, req.currentUser);
+    console.log("Shared sales rule delete result", {
+      deletedId: String(existingRule._id),
+      deletedCount,
+      requestedBy: String(req.currentUser._id),
+    });
+
+    scheduleRecalculation(deletedRuleSnapshot, req.body, req.currentUser);
 
     return res.status(200).json({
       success: true,
       message: "Shared sales rule deleted",
       data: {
         deletedId: String(existingRule._id),
-        deletedCount: wasActive ? 1 : 0,
+        deletedCount,
+        deleted: deletedCount === 1,
       },
     });
   } catch (error) {
