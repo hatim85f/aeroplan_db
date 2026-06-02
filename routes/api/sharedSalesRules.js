@@ -200,6 +200,10 @@ const buildRuleQuery = (queryParams = {}) => {
     query.status = String(queryParams.status).trim().toLowerCase();
   }
 
+  if (queryParams.isActive !== undefined) {
+    query.isActive = String(queryParams.isActive).trim().toLowerCase() === "true";
+  }
+
   if (queryParams.dateFrom || queryParams.dateTo) {
     const dateFrom = parseDate(queryParams.dateFrom, "dateFrom");
     const dateTo = parseDate(queryParams.dateTo, "dateTo");
@@ -244,9 +248,17 @@ const normalizeApplyChangeMode = (body = {}) => {
     throw error;
   }
 
+  const effectiveFromDate = parseDate(body.effectiveFromDate, "effectiveFromDate");
+
+  if (applyChangeMode === "retrospective_from_date" && !effectiveFromDate) {
+    const error = new Error("effectiveFromDate is required when applyChangeMode is retrospective_from_date");
+    error.statusCode = 400;
+    throw error;
+  }
+
   return {
     applyChangeMode,
-    effectiveFromDate: parseDate(body.effectiveFromDate, "effectiveFromDate"),
+    effectiveFromDate,
   };
 };
 
@@ -272,6 +284,68 @@ const scheduleRecalculation = (rule, body, user) => {
   });
 };
 
+const buildBatchRecalculationInputs = (rules, body, user) => {
+  const applyOptions = normalizeApplyChangeMode(body);
+
+  if (applyOptions.applyChangeMode === "future_only") {
+    return [];
+  }
+
+  const inputsByScope = new Map();
+
+  rules.forEach((rule) => {
+    const recalculationInput = buildRuleRecalculationInput(rule, {
+      ...applyOptions,
+      updatedBy: user._id,
+    });
+
+    if (!recalculationInput) {
+      return;
+    }
+
+    const accountId = String(recalculationInput.accountId || "");
+    const channelId = recalculationInput.channelId ? String(recalculationInput.channelId) : "";
+    const dateFrom = recalculationInput.dateFrom instanceof Date
+      ? recalculationInput.dateFrom.toISOString()
+      : "";
+    const key = [accountId, channelId, dateFrom].join(":");
+
+    inputsByScope.set(key, {
+      accountId: recalculationInput.accountId,
+      channelId: recalculationInput.channelId,
+      dateFrom: recalculationInput.dateFrom,
+      updatedBy: recalculationInput.updatedBy,
+    });
+  });
+
+  const inputs = [...inputsByScope.values()];
+  const accountWideKeys = new Set(
+    inputs
+      .filter((input) => !input.channelId)
+      .map((input) => [String(input.accountId || ""), input.dateFrom instanceof Date ? input.dateFrom.toISOString() : ""].join(":")),
+  );
+
+  return inputs.filter((input) => {
+    if (!input.channelId) {
+      return true;
+    }
+
+    const accountWideKey = [String(input.accountId || ""), input.dateFrom instanceof Date ? input.dateFrom.toISOString() : ""].join(":");
+    return !accountWideKeys.has(accountWideKey);
+  });
+};
+
+const recalculateForRules = async (rules, body, user) => {
+  const recalculationInputs = buildBatchRecalculationInputs(rules, body, user);
+  const recalculations = [];
+
+  for (const recalculationInput of recalculationInputs) {
+    recalculations.push(await recalculateSharedSales(recalculationInput));
+  }
+
+  return recalculations;
+};
+
 router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {
     const ruleLines = getRuleLines(req.body);
@@ -284,8 +358,11 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       return res.status(400).json({ success: false, message: "items cannot contain more than 300 rows" });
     }
 
+    normalizeApplyChangeMode(req.body);
+
     const createdRules = [];
     const failedItems = [];
+    const recalculations = [];
 
     const hasItemArray = Array.isArray(req.body.items) || Array.isArray(req.body.products);
 
@@ -319,8 +396,10 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       });
 
       createdRules.push(rule);
-      scheduleRecalculation(rule, req.body, req.currentUser);
+      recalculations.push(await maybeRecalculateForRule(rule, req.body, req.currentUser));
     }
+
+    recalculations.push(...await recalculateForRules(createdRules, req.body, req.currentUser));
 
     return res.status(201).json({
       success: true,
@@ -328,6 +407,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
       data: {
         rules: createdRules,
         failedItems,
+        recalculations: recalculations.filter(Boolean),
         summary: {
           total: ruleLines.length,
           createdCount: createdRules.length,
@@ -345,8 +425,12 @@ router.get("/", auth, loadActor, async (req, res, next) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const query = buildRuleQuery(req.query);
+    const includeInactive = String(req.query.includeInactive || "").trim().toLowerCase() === "true";
 
     if (!isManagerRole(req.currentUser.role)) {
+      query.status = "active";
+      query.isActive = true;
+    } else if (!includeInactive && req.query.status === undefined && req.query.isActive === undefined) {
       query.status = "active";
       query.isActive = true;
     }
@@ -467,22 +551,31 @@ router.delete("/:id", auth, loadActor, requireManager, async (req, res, next) =>
       return res.status(400).json({ success: false, message: "Shared sales rule id must be a valid MongoDB ObjectId" });
     }
 
-    const rule = await SharedSalesRule.findByIdAndUpdate(
-      req.params.id,
-      { $set: { status: "inactive", isActive: false, updatedBy: req.currentUser._id } },
-      { new: true, runValidators: true },
-    );
+    const existingRule = await SharedSalesRule.findById(req.params.id);
 
-    if (!rule) {
-      return res.status(404).json({ success: false, message: "Shared sales rule not found" });
+    if (!existingRule) {
+      return res.status(404).json({
+        success: false,
+        message: "Shared sales rule not found",
+        data: { id: req.params.id },
+      });
     }
 
-    scheduleRecalculation(rule, req.body, req.currentUser);
+    const wasActive = existingRule.status !== "inactive" || existingRule.isActive !== false;
+    existingRule.status = "inactive";
+    existingRule.isActive = false;
+    existingRule.updatedBy = req.currentUser._id;
+    await existingRule.save();
+
+    scheduleRecalculation(existingRule, req.body, req.currentUser);
 
     return res.status(200).json({
       success: true,
-      message: "Shared sales rule deactivated successfully",
-      data: { rule },
+      message: "Shared sales rule deleted",
+      data: {
+        deletedId: String(existingRule._id),
+        deletedCount: wasActive ? 1 : 0,
+      },
     });
   } catch (error) {
     return next(error);
