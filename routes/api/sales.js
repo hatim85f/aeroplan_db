@@ -25,6 +25,31 @@ const PRICE_FIELDS = [
   { field: "wholesaleAed", currency: "AED" },
   { field: "retailAed", currency: "AED" },
 ];
+const CHANNEL_TYPE_FIELD_KEYS = [
+  "channelType",
+  "marketType",
+  "salesChannelType",
+  "customerType",
+  "privateInstitution",
+  "privateOrInstitution",
+  "sector",
+];
+const CHANNEL_TYPE_ALIASES = {
+  private: {
+    channelKeys: ["direct", "private"],
+    priceFields: ["cifUsd"],
+  },
+  direct: {
+    channelKeys: ["direct", "private"],
+    priceFields: ["cifUsd"],
+  },
+  institution: {
+    channelKeys: ["institution", "institutional"],
+  },
+  institutional: {
+    channelKeys: ["institution", "institutional"],
+  },
+};
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -183,6 +208,34 @@ const getMappedValue = (row, key, columnMapping = {}) => {
   return mappedColumn ? row?.[mappedColumn] : undefined;
 };
 
+const getFirstMappedValue = (row, keys = [], columnMapping = {}) => {
+  for (const key of keys) {
+    const value = getMappedValue(row, key, columnMapping);
+
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return undefined;
+};
+
+const normalizeUploadColumnMapping = (body = {}, mapping = null) => {
+  const columnMapping = { ...(body.columnMapping || mapping?.columnMapping || {}) };
+  const channelTypeColumn = body.channelTypeColumn
+    || body.marketTypeColumn
+    || body.salesChannelTypeColumn
+    || body.customerTypeColumn
+    || body.privateInstitutionColumn
+    || body.privateOrInstitutionColumn;
+
+  if (channelTypeColumn && !columnMapping.channelType) {
+    columnMapping.channelType = channelTypeColumn;
+  }
+
+  return columnMapping;
+};
+
 const normalizeSalesRow = (row = {}, columnMapping = {}, fallback = {}) => {
   const month = parseNumber(getMappedValue(row, "month", columnMapping), fallback.month);
   const year = parseNumber(getMappedValue(row, "year", columnMapping), fallback.year);
@@ -205,9 +258,15 @@ const normalizeSalesRow = (row = {}, columnMapping = {}, fallback = {}) => {
     quantity: parseNumber(getMappedValue(row, "quantity", columnMapping), NaN),
     freeQuantity: parseNumber(getMappedValue(row, "freeQuantity", columnMapping), 0),
     uploadedSalesValue: parseNumber(getMappedValue(row, "salesValue", columnMapping), 0),
-    uploadedCurrency: String(getMappedValue(row, "currency", columnMapping) || "").trim().toUpperCase(),
+    uploadedCurrency: String(
+      getMappedValue(row, "currency", columnMapping)
+      || fallback.uploadedCurrency
+      || fallback.currency
+      || "",
+    ).trim().toUpperCase(),
     channelName: getMappedValue(row, "channelName", columnMapping),
     channelKey: getMappedValue(row, "channelKey", columnMapping),
+    channelType: getFirstMappedValue(row, CHANNEL_TYPE_FIELD_KEYS, columnMapping) || fallback.channelType,
   };
 };
 
@@ -324,6 +383,53 @@ const getComparablePriceFields = (currency) => {
   return fields.length > 0 ? fields : PRICE_FIELDS;
 };
 
+const getChannelTypeHint = (value) => {
+  const normalizedValue = normalizeKey(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const alias = CHANNEL_TYPE_ALIASES[normalizedValue];
+
+  return {
+    rawValue: value,
+    normalizedValue,
+    channelKeys: alias?.channelKeys || [normalizedValue],
+    priceFields: alias?.priceFields,
+  };
+};
+
+const pricingMatchesChannelHint = (pricing, hint) => {
+  if (!hint) {
+    return true;
+  }
+
+  const pricingKey = normalizeKey(pricing?.channelKey || pricing?.channelName);
+  return hint.channelKeys.some((channelKey) => pricingKey === normalizeKey(channelKey));
+};
+
+const priceValuesMatch = (uploadedUnitValue, unitValue) => {
+  if (uploadedUnitValue <= 0 || unitValue <= 0) {
+    return false;
+  }
+
+  const relativeDifference = Math.abs(uploadedUnitValue - unitValue) / unitValue;
+
+  if (relativeDifference <= PRICE_MATCH_TOLERANCE) {
+    return true;
+  }
+
+  const roundedUploaded = Number(uploadedUnitValue.toFixed(2));
+  const roundedUnit = Number(unitValue.toFixed(2));
+
+  if (roundedUploaded === roundedUnit) {
+    return true;
+  }
+
+  return Math.abs(roundedUploaded - roundedUnit) <= 0.01;
+};
+
 const detectPriceFieldForPricing = (pricing, uploadedUnitValue, currency) => {
   if (!pricing || uploadedUnitValue <= 0) {
     return null;
@@ -336,7 +442,7 @@ const detectPriceFieldForPricing = (pricing, uploadedUnitValue, currency) => {
       return false;
     }
 
-    return Math.abs(uploadedUnitValue - unitValue) / unitValue <= PRICE_MATCH_TOLERANCE;
+    return priceValuesMatch(uploadedUnitValue, unitValue);
   }) || null;
 };
 
@@ -351,6 +457,7 @@ const detectSalesChannel = async (row, product) => {
   }
 
   const uploadedUnitValue = row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0;
+  const channelTypeHint = getChannelTypeHint(row.channelType);
 
   if (row.channelKey || row.channelName) {
     const query = row.channelKey
@@ -383,11 +490,17 @@ const detectSalesChannel = async (row, product) => {
     }
   }
 
-  const comparablePriceFields = getComparablePriceFields(row.uploadedCurrency);
+  const comparablePriceFields = channelTypeHint?.priceFields
+    ? PRICE_FIELDS.filter((priceField) => channelTypeHint.priceFields.includes(priceField.field))
+    : getComparablePriceFields(row.uploadedCurrency);
 
   if (uploadedUnitValue > 0) {
     const matches = (product.channelPricing || []).map((pricing) => {
       if (pricing.isAvailable === false) {
+        return null;
+      }
+
+      if (!pricingMatchesChannelHint(pricing, channelTypeHint)) {
         return null;
       }
 
@@ -398,7 +511,7 @@ const detectSalesChannel = async (row, product) => {
           return false;
         }
 
-        return Math.abs(uploadedUnitValue - unitValue) / unitValue <= PRICE_MATCH_TOLERANCE;
+        return priceValuesMatch(uploadedUnitValue, unitValue);
       });
 
       return matchedField ? { pricing, matchedField } : null;
@@ -409,7 +522,7 @@ const detectSalesChannel = async (row, product) => {
       return {
         channel,
         pricing: matches[0].pricing,
-        method: "price_match",
+        method: channelTypeHint ? "sheet_channel" : "price_match",
         detectedPriceBasis: matches[0].matchedField.field,
         detectedPriceCurrency: matches[0].matchedField.currency,
         uploadedUnitValue,
@@ -421,9 +534,11 @@ const detectSalesChannel = async (row, product) => {
       return {
         channel: null,
         pricing: null,
-        method: "price_match",
+        method: channelTypeHint ? "sheet_channel" : "price_match",
         uploadedUnitValue,
-        warning: "Multiple sales channels matched by uploaded unit value",
+        warning: channelTypeHint
+          ? `Multiple sales channels matched by ${row.channelType} and uploaded unit value`
+          : "Multiple sales channels matched by uploaded unit value",
       };
     }
   }
@@ -433,7 +548,9 @@ const detectSalesChannel = async (row, product) => {
     pricing: null,
     method: "unknown",
     uploadedUnitValue,
-    warning: "Sales channel could not be detected from uploaded unit value and currency",
+    warning: channelTypeHint
+      ? `Sales channel could not be detected from ${row.channelType}, uploaded unit value, and currency`
+      : "Sales channel could not be detected from uploaded unit value and currency",
   };
 };
 
@@ -651,7 +768,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
       mapping = await SalesSheetMapping.findById(req.body.mappingId).lean();
     }
 
-    const columnMapping = req.body.columnMapping || mapping?.columnMapping || {};
+    const columnMapping = normalizeUploadColumnMapping(req.body, mapping);
     const batch = await SalesUploadBatch.create({
       fileName: req.body.fileName,
       uploadedBy: req.currentUser._id,
@@ -704,6 +821,9 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         const row = normalizeSalesRow(rawRow, columnMapping, {
           month: Number(req.body.month),
           year: Number(req.body.year),
+          uploadedCurrency: req.body.uploadedCurrency,
+          currency: req.body.currency,
+          channelType: req.body.channelType || req.body.marketType || req.body.privateInstitution,
         });
         const rowValidationError = validateSalesRow(row);
 
