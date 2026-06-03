@@ -80,6 +80,33 @@ const main = async () => {
   }, product, channelLookup);
   assert.strictEqual(institutionResult.channel.channelKey, "institution");
 
+  const privateReturnResult = await detectSalesChannel({
+    quantity: -1,
+    uploadedSalesValue: -5.5,
+    uploadedCurrency: "AED",
+    channelType: "private",
+  }, product, channelLookup);
+  assert.strictEqual(privateReturnResult.channel.channelKey, "upp");
+  assert.strictEqual(privateReturnResult.uploadedUnitValue, 5.5);
+
+  const zeroValuePrivateResult = await detectSalesChannel({
+    quantity: 0,
+    uploadedSalesValue: 0,
+    uploadedCurrency: "AED",
+    channelType: "private",
+  }, product, channelLookup);
+  assert.strictEqual(zeroValuePrivateResult.channel.channelKey, "direct");
+  assert.strictEqual(zeroValuePrivateResult.method, "sales_type_price_match");
+
+  const negativeQuantityValidation = validateSalesRow({
+    salesDate: new Date(),
+    productName: "CEFIX 100MG/5ML SUSP 60ML",
+    accountName: "Test Account",
+    quantity: -1,
+    freeQuantity: 0,
+  });
+  assert.strictEqual(negativeQuantityValidation, null);
+
   const quantityError = validateSalesRow({
     salesDate: new Date(),
     productName: "CEFIX 100MG/5ML SUSP 60ML",
@@ -87,7 +114,7 @@ const main = async () => {
     quantity: 0,
     freeQuantity: 0,
   });
-  assert.match(quantityError.message, /Quantity must be greater than 0/);
+  assert.match(quantityError.message, /cannot both be 0/);
   assert.strictEqual(quantityError.quantity, 0);
   assert.strictEqual(quantityError.freeQuantity, 0);
 
@@ -95,6 +122,8 @@ const main = async () => {
     privateUpp: privateUppResult.channel.channelKey,
     privateDirect: privateDirectResult.channel.channelKey,
     institution: institutionResult.channel.channelKey,
+    privateReturn: privateReturnResult.channel.channelKey,
+    zeroValuePrivate: zeroValuePrivateResult.channel.channelKey,
     quantityError: quantityError.message,
   }, null, 2));
 };

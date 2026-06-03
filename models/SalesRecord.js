@@ -21,27 +21,22 @@ const areaShareSchema = new Schema(
     sharedQuantity: {
       type: Number,
       default: 0,
-      min: 0,
     },
     sharedFreeQuantity: {
       type: Number,
       default: 0,
-      min: 0,
     },
     sharedCalculatedCifUsd: {
       type: Number,
       default: 0,
-      min: 0,
     },
     sharedCalculatedWholesaleAed: {
       type: Number,
       default: 0,
-      min: 0,
     },
     sharedCalculatedRetailAed: {
       type: Number,
       default: 0,
-      min: 0,
     },
     ruleId: {
       type: Schema.Types.ObjectId,
@@ -199,17 +194,14 @@ const salesRecordSchema = new Schema(
     quantity: {
       type: Number,
       required: true,
-      min: 0,
     },
     freeQuantity: {
       type: Number,
       default: 0,
-      min: 0,
     },
     totalQuantityWithFoc: {
       type: Number,
       default: 0,
-      min: 0,
     },
     uploadedSalesValue: {
       type: Number,
@@ -235,17 +227,14 @@ const salesRecordSchema = new Schema(
     calculatedCifUsd: {
       type: Number,
       default: 0,
-      min: 0,
     },
     calculatedWholesaleAed: {
       type: Number,
       default: 0,
-      min: 0,
     },
     calculatedRetailAed: {
       type: Number,
       default: 0,
-      min: 0,
     },
     unitCifUsd: {
       type: Number,
@@ -286,7 +275,6 @@ const salesRecordSchema = new Schema(
     targetCalculatedValue: {
       type: Number,
       default: 0,
-      min: 0,
     },
     matchedOrderId: {
       type: Schema.Types.ObjectId,

@@ -374,12 +374,8 @@ const normalizeSalesRow = (row = {}, columnMapping = {}, fallback = {}) => {
 const validateSalesRow = (row) => {
   const missing = [];
   const freeQuantity = Number(row.freeQuantity || 0);
-  const hasInvalidQuantity = !Number.isFinite(row.quantity)
-    || row.quantity < 0
-    || freeQuantity < 0
-    || (row.quantity === 0 && freeQuantity <= 0);
-  const hasValidSalesQuantity = Number.isFinite(row.quantity)
-    && (row.quantity > 0 || (row.quantity === 0 && freeQuantity > 0));
+  const hasInvalidQuantity = !Number.isFinite(row.quantity) || !Number.isFinite(freeQuantity);
+  const hasZeroQuantities = row.quantity === 0 && freeQuantity === 0;
 
   if (!row.salesDate && (!row.month || !row.year)) {
     missing.push("salesDate or month/year");
@@ -389,9 +385,9 @@ const validateSalesRow = (row) => {
     missing.push("productName or productNickname");
   }
 
-  if (hasInvalidQuantity || !hasValidSalesQuantity) {
+  if (hasInvalidQuantity || hasZeroQuantities) {
     return {
-      message: "Quantity must be greater than 0, or quantity can be 0 only when FOC quantity is greater than 0. Negative quantity or negative FOC quantity is not allowed.",
+      message: "Quantity and FOC quantity must be valid numbers. Quantity and FOC quantity cannot both be 0. Negative values are allowed for returns.",
       quantity: row.quantity,
       freeQuantity,
     };
@@ -701,6 +697,20 @@ const isDirectChannel = (candidate) => {
   return key === "direct" || name === "direct" || name.includes("direct");
 };
 
+const getFallbackChannelCandidate = (product, channelLookup, channelTypeHint) => {
+  const candidates = buildPricingCandidates(product, channelLookup, channelTypeHint);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  if (channelTypeHint?.channelGroup === "private") {
+    return candidates.find(isDirectChannel) || candidates[0];
+  }
+
+  return candidates[0];
+};
+
 const detectPriceFieldForPricing = (pricing, uploadedUnitValue, currency) => {
   if (!pricing || uploadedUnitValue <= 0) {
     return null;
@@ -727,7 +737,9 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
     };
   }
 
-  const uploadedUnitValue = row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0;
+  const uploadedUnitValue = row.quantity !== 0
+    ? Math.abs(row.uploadedSalesValue / row.quantity)
+    : 0;
   const channelTypeHint = getChannelTypeHint(row.channelType);
 
   if (row.channelKey || row.channelName) {
@@ -764,6 +776,24 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
   const comparablePriceFields = channelTypeHint?.priceFields
     ? getComparablePriceFields(row.uploadedCurrency).filter((priceField) => channelTypeHint.priceFields.includes(priceField.field))
     : getComparablePriceFields(row.uploadedCurrency);
+
+  if (uploadedUnitValue === 0 && Number(row.uploadedSalesValue || 0) === 0 && channelTypeHint) {
+    const fallbackCandidate = getFallbackChannelCandidate(product, channelLookup, channelTypeHint);
+
+    if (fallbackCandidate) {
+      const channel = fallbackCandidate.channel
+        || await SalesChannel.findById(fallbackCandidate.pricing.channelId).lean();
+
+      return {
+        channel,
+        pricing: fallbackCandidate.pricing,
+        method: "sales_type_price_match",
+        uploadedUnitValue,
+        warning: null,
+        matchNote: `Detected by ${channelTypeHint.channelGroup} salesType fallback for zero-value row`,
+      };
+    }
+  }
 
   if (uploadedUnitValue > 0) {
     const scoredCandidates = buildPricingCandidates(product, channelLookup, channelTypeHint)
@@ -1073,7 +1103,7 @@ const reprocessSalesRecord = async (record, context) => {
   record.channelDetectionMethod = channelResult.method;
   record.salesType = salesTypeHint?.normalizedValue || record.salesType;
   record.salesTypeNormalized = salesTypeHint?.channelGroup || record.salesTypeNormalized;
-  record.uploadedUnitValue = channelResult.uploadedUnitValue ?? (row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0);
+  record.uploadedUnitValue = channelResult.uploadedUnitValue ?? (row.quantity !== 0 ? Math.abs(row.uploadedSalesValue / row.quantity) : 0);
   record.detectedPriceBasis = channelResult.detectedPriceBasis;
   record.detectedPriceCurrency = channelResult.detectedPriceCurrency;
   Object.assign(record, calculatedValues);
@@ -1459,7 +1489,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           freeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,
           uploadedCurrency: row.uploadedCurrency,
-          uploadedUnitValue: channelResult.uploadedUnitValue ?? (row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0),
+          uploadedUnitValue: channelResult.uploadedUnitValue ?? (row.quantity !== 0 ? Math.abs(row.uploadedSalesValue / row.quantity) : 0),
           detectedPriceBasis: channelResult.detectedPriceBasis,
           detectedPriceCurrency: channelResult.detectedPriceCurrency,
           ...calculatedValues,
@@ -1591,12 +1621,14 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       const quantity = Number(item.quantity);
       const freeQuantity = Number(item.freeQuantity || 0);
 
-      if (!Number.isFinite(quantity) || (quantity <= 0 && !(quantity === 0 && freeQuantity > 0))) {
+      if (!Number.isFinite(quantity) || !Number.isFinite(freeQuantity) || (quantity === 0 && freeQuantity === 0)) {
         failedItems.push({
           index,
           rowNumber,
           productId: item.productId,
-          reason: "quantity must be greater than 0, or equal to 0 when freeQuantity is greater than 0",
+          quantity,
+          freeQuantity,
+          reason: "Quantity and FOC quantity must be valid numbers. Quantity and FOC quantity cannot both be 0. Negative values are allowed for returns.",
         });
         continue;
       }
@@ -1632,7 +1664,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
 
         const uploadedSalesValue = parseNumber(item.uploadedSalesValue, 0);
         const uploadedCurrency = String(item.uploadedCurrency || req.body.uploadedCurrency || "").trim().toUpperCase();
-        const uploadedUnitValue = quantity > 0 ? uploadedSalesValue / quantity : 0;
+        const uploadedUnitValue = quantity !== 0 ? Math.abs(uploadedSalesValue / quantity) : 0;
         const detectedPriceField = detectPriceFieldForPricing(pricing, uploadedUnitValue, uploadedCurrency);
         const calculatedValues = buildCalculatedValues(quantity, pricing);
         const record = await SalesRecord.create({
