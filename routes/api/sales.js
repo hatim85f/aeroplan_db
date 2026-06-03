@@ -5,12 +5,14 @@ const Account = require("../../models/Account");
 const Order = require("../../models/Order");
 const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
+const SalesDetectionRule = require("../../models/SalesDetectionRule");
 const SalesRecord = require("../../models/SalesRecord");
 const SalesSheetMapping = require("../../models/SalesSheetMapping");
 const SalesUploadBatch = require("../../models/SalesUploadBatch");
 const TargetAssignment = require("../../models/TargetAssignment");
 const User = require("../../models/User");
 const { applySharedSalesToRecord, recalculateSharedSales } = require("../../helpers/sharedSales");
+const { cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
@@ -18,6 +20,8 @@ const router = express.Router();
 const MATCH_STATUSES = ["unmatched", "partially_matched", "matched", "needs_review"];
 const RECORD_STATUSES = ["active", "ignored", "duplicate", "error"];
 const MAPPING_STATUSES = ["active", "inactive"];
+const DETECTION_RULE_STATUSES = ["active", "inactive"];
+const ACCOUNT_MATCH_SOURCES = ["shipToAccountName", "accountName", "auto"];
 const UPLOAD_MODES = ["override", "amend"];
 const PRICE_MATCH_PERCENT_TOLERANCE = 0.15;
 const PRICE_MATCH_ABSOLUTE_TOLERANCE = 0.75;
@@ -686,6 +690,150 @@ const matchAccount = async (row, user, accountCandidates = null) => {
   return placeholderResult;
 };
 
+const matchAccountBySource = async (row, user, accountCandidates, accountMatchSource = "auto") => {
+  if (accountMatchSource === "shipToAccountName") {
+    return matchAccount({ ...row, accountName: undefined }, user, accountCandidates);
+  }
+
+  if (accountMatchSource === "accountName") {
+    return matchAccount({ ...row, shipToAccountName: undefined }, user, accountCandidates);
+  }
+
+  return matchAccount(row, user, accountCandidates);
+};
+
+const normalizeRuleTextList = (values = []) => values.map(normalizeText).filter(Boolean);
+
+const normalizeRuleKeyList = (values = []) => values.map(normalizeKey).filter(Boolean);
+
+const listMatchesText = (ruleValues = [], input) => {
+  const normalizedInput = normalizeText(input);
+
+  if (ruleValues.length === 0) {
+    return true;
+  }
+
+  return Boolean(normalizedInput) && ruleValues.some((value) => normalizeText(value) === normalizedInput);
+};
+
+const listMatchesKey = (ruleValues = [], input) => {
+  const normalizedInput = normalizeKey(input);
+
+  if (ruleValues.length === 0) {
+    return true;
+  }
+
+  return Boolean(normalizedInput) && ruleValues.some((value) => normalizeKey(value) === normalizedInput);
+};
+
+const getSalesDetectionRuleScopeQuery = (user) => {
+  const scopeConditions = [
+    {
+      teamId: { $exists: false },
+      managerId: { $exists: false },
+      userId: { $exists: false },
+    },
+    {
+      teamId: null,
+      managerId: null,
+      userId: null,
+    },
+    { userId: user._id },
+  ];
+
+  if (user.teamId) {
+    scopeConditions.push({ teamId: user.teamId });
+  }
+
+  if (user.managerId) {
+    scopeConditions.push({ managerId: user.managerId });
+  }
+
+  if (isManagerRole(user.role)) {
+    scopeConditions.push({ managerId: user._id });
+  }
+
+  (user.path || []).forEach((managerId) => {
+    scopeConditions.push({ managerId });
+  });
+
+  return {
+    status: "active",
+    isActive: true,
+    $or: scopeConditions,
+  };
+};
+
+const loadSalesDetectionRules = async (user) => SalesDetectionRule.find(getSalesDetectionRuleScopeQuery(user))
+  .sort({ priority: 1, createdAt: 1 })
+  .lean();
+
+const ruleMatchesRow = (rule, row, product) => {
+  if (!listMatchesText(rule.soldToAccountNames, row.accountName)) return false;
+  if (!listMatchesText(rule.accountNames, row.accountName)) return false;
+  if (!listMatchesText(rule.shipToAccountNames, row.shipToAccountName)) return false;
+  if (!listMatchesKey(rule.salesTypes, row.channelType)) return false;
+  if (!listMatchesKey(rule.channelTypes, row.channelType)) return false;
+
+  if (rule.uploadedCurrency && String(rule.uploadedCurrency).trim().toUpperCase() !== String(row.uploadedCurrency || "").trim().toUpperCase()) {
+    return false;
+  }
+
+  if (Array.isArray(rule.productIds) && rule.productIds.length > 0) {
+    if (!product?._id || !rule.productIds.some((productId) => String(productId) === String(product._id))) {
+      return false;
+    }
+  }
+
+  if (!listMatchesText(rule.productNicknames, row.productNickname || row.productName || product?.productNickname || product?.productName)) {
+    return false;
+  }
+
+  return true;
+};
+
+const detectSalesChannelByRule = async (row, product, rules = [], channelLookup = {}) => {
+  if (!product || !Array.isArray(rules) || rules.length === 0) {
+    return null;
+  }
+
+  const matchingRules = rules
+    .filter((rule) => ruleMatchesRow(rule, row, product))
+    .sort((left, right) => Number(left.priority || 100) - Number(right.priority || 100));
+
+  if (matchingRules.length === 0) {
+    return null;
+  }
+
+  const highestPriority = Number(matchingRules[0].priority || 100);
+  const topRules = matchingRules.filter((rule) => Number(rule.priority || 100) === highestPriority);
+  const channelIds = [...new Set(topRules.map((rule) => String(rule.channelId)))];
+
+  if (channelIds.length > 1) {
+    return {
+      channel: null,
+      pricing: null,
+      method: "special_rule",
+      warning: `Multiple special sales detection rules matched with conflicting channels: ${topRules.map((rule) => rule.ruleName).join(", ")}`,
+    };
+  }
+
+  const rule = topRules[0];
+  const channel = channelLookup.byId?.get(String(rule.channelId))
+    || await SalesChannel.findById(rule.channelId).lean();
+  const pricing = findPricing(product, rule.channelId);
+
+  return {
+    channel,
+    pricing,
+    method: "special_rule",
+    warning: pricing ? null : `Special sales detection rule "${rule.ruleName}" matched, but product has no pricing for ${rule.channelName || channel?.channelName || "that channel"}`,
+    matchNote: `Detected by special rule: ${rule.ruleName}`,
+    matchedRule: rule,
+    accountMatchSource: rule.accountMatchSource || "auto",
+  };
+};
+
 const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const findPricing = (product, channelId) => (product?.channelPricing || []).find(
@@ -1250,8 +1398,20 @@ const reprocessSalesRecord = async (record, context) => {
   };
 
   const productResult = await matchProduct(row, context.productCandidates);
-  const accountResult = await matchAccount(row, context.user, context.accountCandidates);
-  const channelResult = await detectSalesChannel(row, productResult.product, context.channelLookup);
+  const specialChannelResult = await detectSalesChannelByRule(
+    row,
+    productResult.product,
+    context.detectionRules,
+    context.channelLookup,
+  );
+  const accountResult = await matchAccountBySource(
+    row,
+    context.user,
+    context.accountCandidates,
+    specialChannelResult?.accountMatchSource,
+  );
+  const channelResult = specialChannelResult
+    || await detectSalesChannel(row, productResult.product, context.channelLookup);
   const rowWarnings = [productResult.warning, accountResult.warning, channelResult.warning].filter(Boolean);
   const rowMatchNotes = [channelResult.matchNote, ...rowWarnings].filter(Boolean);
   const productMatched = Boolean(productResult.product);
@@ -1393,6 +1553,293 @@ const persistUploadColumnMapping = async (body, columnMapping, user, existingMap
     updatedBy: user._id,
   });
 };
+
+const normalizeStringArray = (value) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item) => String(item || "").trim()).filter(Boolean);
+};
+
+const normalizeObjectIdArray = (value) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const values = Array.isArray(value) ? value : [value];
+  return values.filter((item) => isValidObjectId(item)).map((item) => new mongoose.Types.ObjectId(item));
+};
+
+const normalizeDetectionRulePayload = async (body = {}, user, { partial = false } = {}) => {
+  const payload = {};
+
+  ["ruleName", "description", "notes", "uploadedCurrency", "accountMatchSource", "status"].forEach((field) => {
+    if (body[field] !== undefined) {
+      payload[field] = String(body[field]).trim();
+    }
+  });
+
+  ["teamId", "managerId", "userId"].forEach((field) => {
+    if (body[field] !== undefined && body[field] !== null && body[field] !== "") {
+      payload[field] = isValidObjectId(body[field]) ? new mongoose.Types.ObjectId(body[field]) : body[field];
+    }
+  });
+
+  if (body.priority !== undefined) {
+    payload.priority = Number(body.priority);
+  }
+
+  ["soldToAccountNames", "accountNames", "shipToAccountNames", "productNicknames", "salesTypes", "channelTypes"].forEach((field) => {
+    const normalized = normalizeStringArray(body[field]);
+
+    if (normalized !== undefined) {
+      payload[field] = normalized;
+    }
+  });
+
+  const productIds = normalizeObjectIdArray(body.productIds);
+
+  if (productIds !== undefined) {
+    payload.productIds = productIds;
+  }
+
+  let channel = null;
+
+  if (body.channelId !== undefined || body.channelKey !== undefined) {
+    if (body.channelId) {
+      if (!isValidObjectId(body.channelId)) {
+        throw new Error("channelId must be a valid MongoDB ObjectId");
+      }
+
+      channel = await SalesChannel.findOne({ _id: body.channelId, status: "active", isActive: true }).lean();
+    } else if (body.channelKey) {
+      channel = await SalesChannel.findOne({
+        channelKey: normalizeKey(body.channelKey),
+        status: "active",
+        isActive: true,
+      }).lean();
+    }
+
+    if (!channel) {
+      throw new Error("Sales channel not found");
+    }
+
+    payload.channelId = channel._id;
+    payload.channelKey = channel.channelKey;
+    payload.channelName = channel.channelName;
+  } else if (!partial) {
+    throw new Error("channelId or channelKey is required");
+  }
+
+  if (!partial && !payload.ruleName) {
+    throw new Error("ruleName is required");
+  }
+
+  if (payload.priority !== undefined && !Number.isFinite(payload.priority)) {
+    throw new Error("priority must be a valid number");
+  }
+
+  if (payload.accountMatchSource !== undefined && !ACCOUNT_MATCH_SOURCES.includes(payload.accountMatchSource)) {
+    throw new Error("accountMatchSource must be shipToAccountName, accountName, or auto");
+  }
+
+  if (payload.status !== undefined && !DETECTION_RULE_STATUSES.includes(payload.status)) {
+    throw new Error("status must be active or inactive");
+  }
+
+  payload.updatedBy = user._id;
+
+  if (!partial) {
+    payload.createdBy = user._id;
+    payload.status = payload.status || "active";
+    payload.accountMatchSource = payload.accountMatchSource || "auto";
+  }
+
+  return payload;
+};
+
+const buildDetectionRuleQuery = (queryParams = {}) => {
+  const query = {};
+
+  ["teamId", "managerId", "userId", "channelId"].forEach((field) => {
+    if (queryParams[field]) {
+      query[field] = isValidObjectId(queryParams[field])
+        ? new mongoose.Types.ObjectId(queryParams[field])
+        : null;
+    }
+  });
+
+  if (queryParams.status) {
+    query.status = String(queryParams.status).trim().toLowerCase();
+  }
+
+  if (queryParams.search) {
+    const search = String(queryParams.search).trim();
+    query.$or = [
+      { ruleName: { $regex: search, $options: "i" } },
+      { description: { $regex: search, $options: "i" } },
+      { soldToAccountNames: { $regex: search, $options: "i" } },
+      { accountNames: { $regex: search, $options: "i" } },
+      { shipToAccountNames: { $regex: search, $options: "i" } },
+      { productNicknames: { $regex: search, $options: "i" } },
+      { channelName: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  return query;
+};
+
+router.post("/detection-rules", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const payload = await normalizeDetectionRulePayload(req.body, req.currentUser);
+    const rule = await SalesDetectionRule.create(payload);
+
+    return res.status(201).json({
+      success: true,
+      message: "Sales detection rule created successfully",
+      data: rule,
+    });
+  } catch (error) {
+    error.statusCode = error.statusCode || 400;
+    return next(error);
+  }
+});
+
+router.get("/detection-rules", auth, loadSalesActor, async (req, res, next) => {
+  try {
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const query = buildDetectionRuleQuery(req.query);
+    const [rules, total] = await Promise.all([
+      SalesDetectionRule.find(query)
+        .populate("channelId", "channelName channelKey channelGroup")
+        .populate("createdBy", "fullName email businessEmail role")
+        .populate("updatedBy", "fullName email businessEmail role")
+        .sort({ priority: 1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      SalesDetectionRule.countDocuments(query),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales detection rules fetched successfully",
+      data: rules,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/detection-rules/:id", auth, loadSalesActor, async (req, res, next) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Detection rule id must be a valid MongoDB ObjectId" });
+    }
+
+    const rule = await SalesDetectionRule.findById(req.params.id)
+      .populate("channelId", "channelName channelKey channelGroup")
+      .populate("createdBy", "fullName email businessEmail role")
+      .populate("updatedBy", "fullName email businessEmail role");
+
+    if (!rule) {
+      return res.status(404).json({ success: false, message: "Sales detection rule not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales detection rule fetched successfully",
+      data: rule,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch("/detection-rules/:id", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Detection rule id must be a valid MongoDB ObjectId" });
+    }
+
+    const payload = await normalizeDetectionRulePayload(req.body, req.currentUser, { partial: true });
+    const rule = await SalesDetectionRule.findByIdAndUpdate(
+      req.params.id,
+      { $set: payload },
+      { new: true, runValidators: true },
+    );
+
+    if (!rule) {
+      return res.status(404).json({ success: false, message: "Sales detection rule not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales detection rule updated successfully",
+      data: rule,
+    });
+  } catch (error) {
+    error.statusCode = error.statusCode || 400;
+    return next(error);
+  }
+});
+
+router.patch("/detection-rules/:id/status", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const status = String(req.body.status || "").trim().toLowerCase();
+
+    if (!DETECTION_RULE_STATUSES.includes(status)) {
+      return res.status(400).json({ success: false, message: "status must be active or inactive" });
+    }
+
+    const rule = await SalesDetectionRule.findByIdAndUpdate(
+      req.params.id,
+      { $set: { status, isActive: status === "active", updatedBy: req.currentUser._id } },
+      { new: true, runValidators: true },
+    );
+
+    if (!rule) {
+      return res.status(404).json({ success: false, message: "Sales detection rule not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales detection rule status updated successfully",
+      data: rule,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete("/detection-rules/:id", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Detection rule id must be a valid MongoDB ObjectId" });
+    }
+
+    const rule = await SalesDetectionRule.findByIdAndUpdate(
+      req.params.id,
+      { $set: { status: "inactive", isActive: false, updatedBy: req.currentUser._id } },
+      { new: true, runValidators: true },
+    );
+
+    if (!rule) {
+      return res.status(404).json({ success: false, message: "Sales detection rule not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales detection rule deactivated successfully",
+      data: rule,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
@@ -1553,10 +2000,11 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
-    const [accountCandidates, productCandidates, activeChannels] = await Promise.all([
+    const [accountCandidates, productCandidates, activeChannels, detectionRules] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
+      loadSalesDetectionRules(req.currentUser),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -1609,8 +2057,15 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         seenKeys.add(duplicateKey);
 
         const productResult = await matchProduct(row, productCandidates);
-        const accountResult = await matchAccount(row, req.currentUser, accountCandidates);
-        const channelResult = await detectSalesChannel(row, productResult.product, channelLookup);
+        const specialChannelResult = await detectSalesChannelByRule(row, productResult.product, detectionRules, channelLookup);
+        const accountResult = await matchAccountBySource(
+          row,
+          req.currentUser,
+          accountCandidates,
+          specialChannelResult?.accountMatchSource,
+        );
+        const channelResult = specialChannelResult
+          || await detectSalesChannel(row, productResult.product, channelLookup);
         const rowWarnings = [productResult.warning, accountResult.warning, channelResult.warning].filter(Boolean);
         const rowMatchNotes = [channelResult.matchNote, ...rowWarnings].filter(Boolean);
         const productMatched = Boolean(productResult.product);
@@ -1695,7 +2150,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     await batch.save();
     await batch.populate("uploadedBy", "fullName email businessEmail role");
 
-    return res.status(201).json({
+    const responsePayload = {
       success: true,
       message: "Sales upload processed",
       data: {
@@ -1706,7 +2161,22 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         unmatchedRows: unmatched,
         warnings,
       },
+    };
+
+    res.status(201).json(responsePayload);
+
+    setImmediate(() => {
+      cleanupDuplicateSalesRecords({
+        uploadSessionId,
+        batchId: batch._id,
+        month: Number(req.body.month),
+        year: Number(req.body.year),
+      }).catch((error) => {
+        console.error("Background sales duplicate cleanup failed", error);
+      });
     });
+
+    return undefined;
   } catch (error) {
     return next(error);
   }
@@ -2154,10 +2624,11 @@ router.post("/reprocess-channel-detection", auth, loadSalesActor, requireManager
       });
     }
 
-    const [accountCandidates, productCandidates, activeChannels, records] = await Promise.all([
+    const [accountCandidates, productCandidates, activeChannels, detectionRules, records] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
+      loadSalesDetectionRules(req.currentUser),
       SalesRecord.find(query).limit(1000),
     ]);
     const channelLookup = {
@@ -2170,6 +2641,7 @@ router.post("/reprocess-channel-detection", auth, loadSalesActor, requireManager
       accountCandidates,
       productCandidates,
       channelLookup,
+      detectionRules,
     };
     const results = [];
 
@@ -2183,6 +2655,45 @@ router.post("/reprocess-channel-detection", auth, loadSalesActor, requireManager
       data: {
         processedCount: results.length,
         results,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/cleanup-duplicates", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    if (req.body.batchId && !isValidObjectId(req.body.batchId)) {
+      return res.status(400).json({ success: false, message: "batchId must be a valid MongoDB ObjectId" });
+    }
+
+    if ((req.body.month || req.body.year) && validateMonthYear(req.body.month, req.body.year)) {
+      return res.status(400).json({ success: false, message: validateMonthYear(req.body.month, req.body.year) });
+    }
+
+    if (!req.body.batchId && !req.body.uploadSessionId && (!req.body.month || !req.body.year)) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide batchId, uploadSessionId, or year/month",
+      });
+    }
+
+    const result = await cleanupDuplicateSalesRecords({
+      batchId: req.body.batchId,
+      uploadSessionId: req.body.uploadSessionId,
+      year: req.body.year,
+      month: req.body.month,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales duplicate cleanup completed",
+      data: {
+        checkedRecords: result.checkedRecords,
+        duplicateGroupsFound: result.duplicateGroupsFound,
+        duplicatesDeactivated: result.duplicatesDeactivated,
+        keptRecords: result.keptRecords,
       },
     });
   } catch (error) {
@@ -2756,6 +3267,7 @@ router.delete("/:id", auth, loadSalesActor, requireManager, async (req, res, nex
 
 router._test = {
   detectSalesChannel,
+  detectSalesChannelByRule,
   getChannelTypeHint,
   normalizeSalesRow,
   validateSalesRow,
