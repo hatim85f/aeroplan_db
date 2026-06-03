@@ -395,7 +395,22 @@ const validateSalesRow = (row) => {
   return missing.length ? `Missing or invalid required fields: ${missing.join(", ")}` : null;
 };
 
-const matchProduct = async (row) => {
+const matchProduct = async (row, productCandidates = null) => {
+  if (Array.isArray(productCandidates)) {
+    const nickname = normalizeText(row.productNickname);
+    const productName = normalizeText(row.productName);
+    const externalCode = String(row.productExternalCode || "").trim();
+    const product = productCandidates.find((candidate) => (
+      (nickname && normalizeText(candidate.productNickname) === nickname)
+      || (externalCode && String(candidate.productExternalCode || "").trim() === externalCode)
+      || (productName && normalizeText(candidate.productName) === productName)
+    ));
+
+    return product
+      ? { product, warning: null }
+      : { product: null, warning: "Product could not be matched" };
+  }
+
   const queries = [];
 
   if (row.productNickname) {
@@ -456,16 +471,19 @@ const createPlaceholderAccount = async (row, user) => {
   };
 };
 
-const matchAccount = async (row, user) => {
+const matchAccount = async (row, user, accountCandidates = null) => {
   const inputs = [
     row.shipToAccountName,
     row.accountName,
   ].filter(Boolean);
 
+  const candidates = Array.isArray(accountCandidates)
+    ? accountCandidates
+    : await Account.find({}).lean();
+
   for (const input of inputs) {
-    const matches = await Account.find({
-      accountName: { $regex: `^${escapeRegex(input)}$`, $options: "i" },
-    }).limit(2).lean();
+    const normalizedInput = normalizeText(input);
+    const matches = candidates.filter((account) => normalizeText(account.accountName) === normalizedInput).slice(0, 2);
 
     if (matches.length === 1) {
       return { account: matches[0], warning: null };
@@ -477,7 +495,6 @@ const matchAccount = async (row, user) => {
   }
 
   const normalizedInputs = inputs.map(normalizeText).filter(Boolean);
-  const candidates = await Account.find({}).lean();
 
   if (normalizedInputs.length > 0) {
     const matches = candidates.filter((account) => normalizedInputs.includes(normalizeText(account.accountName)));
@@ -515,7 +532,13 @@ const matchAccount = async (row, user) => {
     }
   }
 
-  return createPlaceholderAccount(row, user);
+  const placeholderResult = await createPlaceholderAccount(row, user);
+
+  if (placeholderResult.account && Array.isArray(accountCandidates)) {
+    accountCandidates.push(placeholderResult.account);
+  }
+
+  return placeholderResult;
 };
 
 const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -618,7 +641,7 @@ const detectPriceFieldForPricing = (pricing, uploadedUnitValue, currency) => {
   }) || null;
 };
 
-const detectSalesChannel = async (row, product) => {
+const detectSalesChannel = async (row, product, channelLookup = {}) => {
   if (!product) {
     return {
       channel: null,
@@ -632,10 +655,10 @@ const detectSalesChannel = async (row, product) => {
   const channelTypeHint = getChannelTypeHint(row.channelType);
 
   if (row.channelKey || row.channelName) {
-    const query = row.channelKey
-      ? { channelKey: normalizeKey(row.channelKey) }
-      : { channelName: { $regex: `^${escapeRegex(row.channelName)}$`, $options: "i" } };
-    const channel = await SalesChannel.findOne({ ...query, status: "active", isActive: true }).lean();
+    const channel = row.channelKey
+      ? channelLookup.byKey?.get(normalizeKey(row.channelKey))
+      : channelLookup.byName?.get(normalizeText(row.channelName))
+        || await SalesChannel.findOne({ channelName: { $regex: `^${escapeRegex(row.channelName)}$`, $options: "i" }, status: "active", isActive: true }).lean();
     const pricing = findPricing(product, channel?._id);
     const detectedPriceField = detectPriceFieldForPricing(pricing, uploadedUnitValue, row.uploadedCurrency);
 
@@ -662,7 +685,7 @@ const detectSalesChannel = async (row, product) => {
     }
   }
 
-  const comparablePriceFields = channelTypeHint?.priceFields
+  const comparablePriceFields = channelTypeHint?.priceFields && String(row.uploadedCurrency || "").toUpperCase() !== "AED"
     ? PRICE_FIELDS.filter((priceField) => channelTypeHint.priceFields.includes(priceField.field))
     : getComparablePriceFields(row.uploadedCurrency);
 
@@ -673,10 +696,6 @@ const detectSalesChannel = async (row, product) => {
       }
 
       if (!pricingMatchesChannelHint(pricing, channelTypeHint)) {
-        return null;
-      }
-
-      if (channelTypeHint?.priceFields?.includes("cifUsd") && !pricingMatchesUploadedCurrency(pricing, row.uploadedCurrency)) {
         return null;
       }
 
@@ -694,7 +713,8 @@ const detectSalesChannel = async (row, product) => {
     }).filter(Boolean);
 
     if (matches.length === 1) {
-      const channel = await SalesChannel.findById(matches[0].pricing.channelId).lean();
+      const channel = channelLookup.byId?.get(String(matches[0].pricing.channelId))
+        || await SalesChannel.findById(matches[0].pricing.channelId).lean();
       return {
         channel,
         pricing: matches[0].pricing,
@@ -926,16 +946,21 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     });
 
     if (existingActiveSalesCount > 0 && !uploadMode) {
-      const existingBatches = await SalesUploadBatch.find({
+      const existingBatchesCount = await SalesUploadBatch.countDocuments({
         year: Number(req.body.year),
         month: Number(req.body.month),
-      }).sort({ uploadDate: -1 }).limit(10).lean();
+      });
 
       return res.status(409).json({
         success: false,
         requiresConfirmation: true,
         message: "Sales data already exists for this month/year. Choose override or amend.",
-        existingBatches,
+        data: {
+          year: Number(req.body.year),
+          month: Number(req.body.month),
+          existingActiveSalesCount,
+          existingBatchesCount,
+        },
       });
     }
 
@@ -994,6 +1019,16 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
+    const [accountCandidates, productCandidates, activeChannels] = await Promise.all([
+      Account.find({}).lean(),
+      Product.find({ status: "active", isActive: true }).lean(),
+      SalesChannel.find({ status: "active", isActive: true }).lean(),
+    ]);
+    const channelLookup = {
+      byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
+      byKey: new Map(activeChannels.map((channel) => [normalizeKey(channel.channelKey), channel])),
+      byName: new Map(activeChannels.map((channel) => [normalizeText(channel.channelName), channel])),
+    };
 
     for (const [index, rawRow] of req.body.rows.entries()) {
       const rowNumber = Number(rawRow.rowNumber || index + 1);
@@ -1033,9 +1068,9 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
 
         seenKeys.add(duplicateKey);
 
-        const productResult = await matchProduct(row);
-        const accountResult = await matchAccount(row, req.currentUser);
-        const channelResult = await detectSalesChannel(row, productResult.product);
+        const productResult = await matchProduct(row, productCandidates);
+        const accountResult = await matchAccount(row, req.currentUser, accountCandidates);
+        const channelResult = await detectSalesChannel(row, productResult.product, channelLookup);
         const rowWarnings = [productResult.warning, accountResult.warning, channelResult.warning].filter(Boolean);
         const productMatched = Boolean(productResult.product);
         const accountMatched = Boolean(accountResult.account);
@@ -1051,7 +1086,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           unmatched.push({ rowNumber, message: rowWarnings.join("; ") || "Record needs review", rawRow });
         }
 
-        const record = await SalesRecord.create({
+        const record = new SalesRecord({
           salesUploadBatchId: batch._id,
           entrySource: "upload",
           invoiceNumber: row.invoiceNumber,
