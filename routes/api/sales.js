@@ -245,31 +245,171 @@ const requireManager = (req, res, next) => {
   return next();
 };
 
+const getScopedUserIds = async (user) => {
+  if (user.role === "admin") {
+    return null;
+  }
+
+  if (!isManagerRole(user.role)) {
+    return [user._id];
+  }
+
+  const scopedUsers = await User.find({
+    $or: [
+      { _id: user._id },
+      { path: user._id },
+    ],
+  }).select("_id").lean();
+
+  return scopedUsers.map((scopedUser) => scopedUser._id);
+};
+
+const normalizeObjectIdList = (values = []) => values
+  .map((value) => value?._id || value)
+  .filter((value) => isValidObjectId(value))
+  .map((value) => new mongoose.Types.ObjectId(value));
+
+const getRepresentativeManagerIds = (user) => {
+  const hierarchyIds = [
+    ...(Array.isArray(user.path) ? user.path : []),
+    user.managerId,
+  ].filter(Boolean);
+  const seen = new Set();
+
+  return normalizeObjectIdList(hierarchyIds).filter((id) => {
+    const key = String(id);
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+};
+
+const getVisibleUploaderIds = async (user) => {
+  if (user.role === "admin") {
+    return null;
+  }
+
+  if (isManagerRole(user.role)) {
+    return getScopedUserIds(user);
+  }
+
+  return getRepresentativeManagerIds(user);
+};
+
+const getDownlineUserIds = async (managerId) => {
+  if (!isValidObjectId(managerId)) {
+    return [];
+  }
+
+  const managerObjectId = new mongoose.Types.ObjectId(managerId);
+  const users = await User.find({
+    $or: [
+      { _id: managerObjectId },
+      { path: managerObjectId },
+    ],
+  }).select("_id").lean();
+
+  return users.map((user) => user._id);
+};
+
+const filterUserIdsByVisibility = (candidateUserIds, visibleUserIds) => {
+  if (visibleUserIds === null) {
+    return candidateUserIds;
+  }
+
+  const visibleSet = new Set(visibleUserIds.map((id) => String(id)));
+  return candidateUserIds.filter((id) => visibleSet.has(String(id)));
+};
+
+const getAssignedAccountIds = async (scopedUserIds) => {
+  if (!Array.isArray(scopedUserIds) || scopedUserIds.length === 0) {
+    return [];
+  }
+
+  const accounts = await Account.find({
+    assignedMedicalRepIds: { $in: scopedUserIds },
+  }).select("_id").lean();
+
+  return accounts.map((account) => account._id);
+};
+
+const getAccessibleSalesBatchQuery = async (user) => {
+  if (user.role === "admin") {
+    return {};
+  }
+
+  if (!isManagerRole(user.role)) {
+    return { _id: null };
+  }
+
+  const scopedUserIds = await getScopedUserIds(user);
+
+  if (!Array.isArray(scopedUserIds) || scopedUserIds.length === 0) {
+    return { _id: null };
+  }
+
+  return { uploadedBy: { $in: scopedUserIds } };
+};
+
+const getBatchIdsUploadedBy = async (uploaderIds) => {
+  if (!Array.isArray(uploaderIds) || uploaderIds.length === 0) {
+    return [];
+  }
+
+  const batches = await SalesUploadBatch.find({
+    uploadedBy: { $in: uploaderIds },
+  }).select("_id").lean();
+
+  return batches.map((batch) => batch._id);
+};
+
+const getRequestedUploaderIds = async (queryParams = {}, user) => {
+  const visibleUserIds = await getVisibleUploaderIds(user);
+
+  if (queryParams.uploadedBy) {
+    if (!isValidObjectId(queryParams.uploadedBy)) {
+      return [];
+    }
+
+    return filterUserIdsByVisibility([new mongoose.Types.ObjectId(queryParams.uploadedBy)], visibleUserIds);
+  }
+
+  if (queryParams.managerId) {
+    const downlineIds = await getDownlineUserIds(queryParams.managerId);
+    return filterUserIdsByVisibility(downlineIds, visibleUserIds);
+  }
+
+  return null;
+};
+
 const getAccessibleSalesQuery = async (user) => {
   if (user.role === "admin") {
     return {};
   }
 
-  const scopedUsers = isManagerRole(user.role)
-    ? await User.find({
-      $or: [
-        { _id: user._id },
-        { path: user._id },
-      ],
-    }).select("_id").lean()
-    : [{ _id: user._id }];
-  const scopedUserIds = scopedUsers.map((scopedUser) => scopedUser._id);
-  const accounts = await Account.find({
-    assignedMedicalRepIds: { $in: scopedUserIds },
-  }).select("_id").lean();
+  const scopedUserIds = await getScopedUserIds(user);
+  const assignedAccountIds = await getAssignedAccountIds(scopedUserIds);
+  const visibleUploaderIds = await getVisibleUploaderIds(user);
+  const visibleBatchIds = await getBatchIdsUploadedBy(visibleUploaderIds);
+  const accessBranches = [];
 
-  if (accounts.length === 0) {
+  if (visibleBatchIds.length > 0) {
+    accessBranches.push({ salesUploadBatchId: { $in: visibleBatchIds } });
+  }
+
+  if (assignedAccountIds.length > 0) {
+    accessBranches.push({ accountId: { $in: assignedAccountIds } });
+  }
+
+  if (accessBranches.length === 0) {
     return { _id: null };
   }
 
-  return {
-    accountId: { $in: accounts.map((account) => account._id) },
-  };
+  return accessBranches.length === 1 ? accessBranches[0] : { $or: accessBranches };
 };
 
 const getScopedSalesRecord = async (recordId, user) => {
@@ -960,11 +1100,30 @@ const buildSalesQuery = async (queryParams, user) => {
   const query = {
     ...await getAccessibleSalesQuery(user),
   };
+  const requestedUploaderIds = await getRequestedUploaderIds(queryParams, user);
+
+  if (requestedUploaderIds !== null) {
+    const filteredBatchIds = await getBatchIdsUploadedBy(requestedUploaderIds);
+
+    query.salesUploadBatchId = filteredBatchIds.length > 0
+      ? { $in: filteredBatchIds }
+      : null;
+  }
 
   if (queryParams.batchId) {
-    query.salesUploadBatchId = isValidObjectId(queryParams.batchId)
+    const batchObjectId = isValidObjectId(queryParams.batchId)
       ? new mongoose.Types.ObjectId(queryParams.batchId)
       : null;
+
+    if (
+      batchObjectId
+      && query.salesUploadBatchId?.$in
+      && !query.salesUploadBatchId.$in.some((id) => String(id) === String(batchObjectId))
+    ) {
+      query.salesUploadBatchId = null;
+    } else {
+      query.salesUploadBatchId = batchObjectId;
+    }
   }
 
   ["accountId", "productId", "channelId"].forEach((field) => {
@@ -1035,7 +1194,7 @@ const buildSalesQuery = async (queryParams, user) => {
 
   if (queryParams.search) {
     const search = String(queryParams.search).trim();
-    query.$or = [
+    const searchConditions = [
       { invoiceNumber: { $regex: search, $options: "i" } },
       { accountName: { $regex: search, $options: "i" } },
       { shipToAccountName: { $regex: search, $options: "i" } },
@@ -1044,6 +1203,17 @@ const buildSalesQuery = async (queryParams, user) => {
       { channelName: { $regex: search, $options: "i" } },
       { channelKey: { $regex: search, $options: "i" } },
     ];
+
+    if (query.$or) {
+      query.$and = [
+        ...(query.$and || []),
+        { $or: query.$or },
+        { $or: searchConditions },
+      ];
+      delete query.$or;
+    } else {
+      query.$or = searchConditions;
+    }
   }
 
   if (queryParams.lineId) {
@@ -2294,7 +2464,7 @@ router.get("/batches", auth, loadSalesActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const query = {};
+    const query = await getAccessibleSalesBatchQuery(req.currentUser);
 
     ["year", "month"].forEach((field) => {
       if (req.query[field]) {
@@ -2336,7 +2506,10 @@ router.get("/batches/:id", auth, loadSalesActor, async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Batch id must be a valid MongoDB ObjectId" });
     }
 
-    const batch = await SalesUploadBatch.findById(req.params.id)
+    const batch = await SalesUploadBatch.findOne({
+      _id: req.params.id,
+      ...await getAccessibleSalesBatchQuery(req.currentUser),
+    })
       .populate("uploadedBy", "fullName email businessEmail role");
 
     if (!batch) {
@@ -2373,7 +2546,10 @@ router.get("/batches/:id/records", auth, loadSalesActor, async (req, res, next) 
 
 router.delete("/batches/:id", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
-    const batch = await SalesUploadBatch.findById(req.params.id);
+    const batch = await SalesUploadBatch.findOne({
+      _id: req.params.id,
+      ...await getAccessibleSalesBatchQuery(req.currentUser),
+    });
 
     if (!batch) {
       return res.status(404).json({ success: false, message: "Sales upload batch not found" });
