@@ -1523,6 +1523,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
       ? "completed_with_errors"
       : "completed";
     await batch.save();
+    await batch.populate("uploadedBy", "fullName email businessEmail role");
 
     return res.status(201).json({
       success: true,
@@ -1739,6 +1740,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       ? records.length > 0 ? "completed_with_errors" : "failed"
       : "completed";
     await batch.save();
+    await batch.populate("uploadedBy", "fullName email businessEmail role");
 
     return res.status(201).json({
       success: true,
@@ -2309,7 +2311,11 @@ router.get("/batches", auth, loadSalesActor, async (req, res, next) => {
     }
 
     const [batches, total] = await Promise.all([
-      SalesUploadBatch.find(query).sort({ uploadDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      SalesUploadBatch.find(query)
+        .populate("uploadedBy", "fullName email businessEmail role")
+        .sort({ uploadDate: -1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
       SalesUploadBatch.countDocuments(query),
     ]);
 
@@ -2330,7 +2336,8 @@ router.get("/batches/:id", auth, loadSalesActor, async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Batch id must be a valid MongoDB ObjectId" });
     }
 
-    const batch = await SalesUploadBatch.findById(req.params.id);
+    const batch = await SalesUploadBatch.findById(req.params.id)
+      .populate("uploadedBy", "fullName email businessEmail role");
 
     if (!batch) {
       return res.status(404).json({ success: false, message: "Sales upload batch not found" });
@@ -2375,6 +2382,7 @@ router.delete("/batches/:id", auth, loadSalesActor, requireManager, async (req, 
     batch.status = "failed";
     batch.notes = [batch.notes, "Batch deactivated"].filter(Boolean).join(" | ");
     await batch.save();
+    await batch.populate("uploadedBy", "fullName email businessEmail role");
 
     if (normalizeBoolean(req.query.markRecordsIgnored ?? req.body.markRecordsIgnored, false)) {
       await SalesRecord.updateMany(
