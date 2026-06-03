@@ -23,7 +23,6 @@ const channelPricingSchema = new Schema(
       type: String,
       enum: ["private", "institution", "government", "tender", "other"],
       default: "private",
-      index: true,
     },
     isAvailable: {
       type: Boolean,
