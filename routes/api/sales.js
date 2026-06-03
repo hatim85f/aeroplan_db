@@ -196,7 +196,7 @@ const parseDate = (value, fieldName = "date") => {
     return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   }
 
-  const slashDateMatch = normalizedValue.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+  const slashDateMatch = normalizedValue.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2}|\d{4})$/);
 
   if (slashDateMatch) {
     const [, firstPart, secondPart, yearPart] = slashDateMatch;
@@ -381,7 +381,7 @@ const validateSalesRow = (row) => {
   const missing = [];
   const freeQuantity = Number(row.freeQuantity || 0);
   const hasValidSalesQuantity = Number.isFinite(row.quantity)
-    && (row.quantity > 0 || (row.quantity === 0 && freeQuantity > 1));
+    && (row.quantity > 0 || (row.quantity === 0 && freeQuantity > 0));
 
   if (!row.salesDate && (!row.month || !row.year)) {
     missing.push("salesDate or month/year");
@@ -970,6 +970,78 @@ const validateMappingPayload = (payload, { partial = false } = {}) => {
   return null;
 };
 
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+};
+
+const buildAutoMappingName = (body) => {
+  if (body.mappingName) {
+    return String(body.mappingName).trim();
+  }
+
+  if (body.fileName) {
+    return `${String(body.fileName).trim().replace(/\.[^.]+$/, "")} mapping`;
+  }
+
+  return `Sales upload ${body.month || ""}/${body.year || ""} mapping`.trim();
+};
+
+const persistUploadColumnMapping = async (body, columnMapping, user, existingMapping = null) => {
+  if (!columnMapping || typeof columnMapping !== "object" || Object.keys(columnMapping).length === 0) {
+    return existingMapping;
+  }
+
+  if (existingMapping) {
+    return existingMapping;
+  }
+
+  const sourceType = String(body.sourceType || body.mappingSourceType || "sales_upload").trim();
+  const isDefault = normalizeBoolean(body.saveMappingAsDefault ?? body.isDefaultMapping ?? true, true);
+  const mappingSignature = stableStringify(columnMapping);
+  const existingMappings = await SalesSheetMapping.find({ sourceType, status: "active" });
+  const matchingMapping = existingMappings.find((candidate) => (
+    stableStringify(candidate.columnMapping || {}) === mappingSignature
+  ));
+
+  if (isDefault) {
+    await SalesSheetMapping.updateMany({ isDefault: true }, { $set: { isDefault: false } });
+  }
+
+  if (matchingMapping) {
+    matchingMapping.mappingName = matchingMapping.mappingName || buildAutoMappingName(body);
+    matchingMapping.description = body.mappingDescription || matchingMapping.description;
+    matchingMapping.sourceType = sourceType;
+    matchingMapping.isDefault = isDefault;
+    matchingMapping.status = "active";
+    matchingMapping.requiredColumns = Array.isArray(body.requiredColumns)
+      ? body.requiredColumns
+      : matchingMapping.requiredColumns;
+    matchingMapping.updatedBy = user._id;
+    await matchingMapping.save();
+    return matchingMapping;
+  }
+
+  return SalesSheetMapping.create({
+    mappingName: buildAutoMappingName(body),
+    description: body.mappingDescription || body.notes,
+    sourceType,
+    isDefault,
+    status: "active",
+    columnMapping,
+    requiredColumns: Array.isArray(body.requiredColumns) ? body.requiredColumns : [],
+    createdBy: user._id,
+    updatedBy: user._id,
+  });
+};
+
 router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     const validationError = validateMonthYear(req.body.month, req.body.year);
@@ -1023,10 +1095,15 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         return res.status(400).json({ success: false, message: "mappingId must be a valid MongoDB ObjectId" });
       }
 
-      mapping = await SalesSheetMapping.findById(req.body.mappingId).lean();
+      mapping = await SalesSheetMapping.findById(req.body.mappingId);
+
+      if (!mapping) {
+        return res.status(404).json({ success: false, message: "Sales sheet mapping not found" });
+      }
     }
 
     const columnMapping = normalizeUploadColumnMapping(req.body, mapping);
+    mapping = await persistUploadColumnMapping(req.body, columnMapping, req.currentUser, mapping);
     const batch = await SalesUploadBatch.create({
       fileName: req.body.fileName,
       uploadedBy: req.currentUser._id,
@@ -1210,6 +1287,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
       message: "Sales upload processed",
       data: {
         batch,
+        mapping,
         records: createdRecords,
         failedRows: failed,
         unmatchedRows: unmatched,
@@ -1301,12 +1379,12 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       const quantity = Number(item.quantity);
       const freeQuantity = Number(item.freeQuantity || 0);
 
-      if (!Number.isFinite(quantity) || (quantity <= 0 && !(quantity === 0 && freeQuantity > 1))) {
+      if (!Number.isFinite(quantity) || (quantity <= 0 && !(quantity === 0 && freeQuantity > 0))) {
         failedItems.push({
           index,
           rowNumber,
           productId: item.productId,
-          reason: "quantity must be greater than 0, or equal to 0 when freeQuantity is greater than 1",
+          reason: "quantity must be greater than 0, or equal to 0 when freeQuantity is greater than 0",
         });
         continue;
       }

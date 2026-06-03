@@ -214,7 +214,6 @@ const salesRecordSchema = new Schema(
     uploadedSalesValue: {
       type: Number,
       default: 0,
-      min: 0,
     },
     uploadedCurrency: {
       type: String,
@@ -224,7 +223,6 @@ const salesRecordSchema = new Schema(
     uploadedUnitValue: {
       type: Number,
       default: 0,
-      min: 0,
     },
     detectedPriceBasis: {
       type: String,
