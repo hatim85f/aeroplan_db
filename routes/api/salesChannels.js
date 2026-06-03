@@ -9,6 +9,7 @@ const router = express.Router();
 
 const TARGET_VALUE_BASES = ["cifUsd", "wholesaleAed", "retailAed"];
 const TARGET_CURRENCIES = ["USD", "AED"];
+const CHANNEL_GROUPS = ["private", "institution", "government", "tender", "other"];
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -67,6 +68,7 @@ const normalizeSalesChannelPayload = (body, { partial = false } = {}) => {
     "description",
     "focEnabled",
     "allowRepOrders",
+    "channelGroup",
     "defaultTargetValueBasis",
     "defaultTargetCurrency",
     "status",
@@ -102,6 +104,10 @@ const normalizeSalesChannelPayload = (body, { partial = false } = {}) => {
     payload.allowRepOrders = normalizeBoolean(payload.allowRepOrders);
   }
 
+  if (payload.channelGroup !== undefined) {
+    payload.channelGroup = String(payload.channelGroup).trim().toLowerCase();
+  }
+
   if (payload.defaultTargetValueBasis !== undefined) {
     payload.defaultTargetValueBasis = normalizeTargetValueBasis(payload.defaultTargetValueBasis);
   }
@@ -134,6 +140,10 @@ const validateSalesChannelPayload = (payload, { partial = false } = {}) => {
 
   if (payload.status !== undefined && !["active", "inactive"].includes(payload.status)) {
     return "status must be active or inactive";
+  }
+
+  if (payload.channelGroup !== undefined && !CHANNEL_GROUPS.includes(payload.channelGroup)) {
+    return "channelGroup must be private, institution, government, tender, or other";
   }
 
   if (
