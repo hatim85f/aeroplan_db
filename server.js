@@ -25,6 +25,7 @@ const medicalRepProductAssignmentRoutes = require('./routes/api/medicalRepProduc
 const targetAssignmentRoutes = require('./routes/api/targetAssignments');
 const targetPhasingRoutes = require('./routes/api/targetPhasing');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
+const ensureSalesChannelGroups = require('./helpers/ensureSalesChannelGroups');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -103,6 +104,7 @@ app.use(errorHandler);
 const startServer = async () => {
   await connectDB();
   await cleanupObsoleteIndexes();
+  await ensureSalesChannelGroups();
 
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

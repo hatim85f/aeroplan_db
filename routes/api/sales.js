@@ -19,7 +19,7 @@ const MATCH_STATUSES = ["unmatched", "partially_matched", "matched", "needs_revi
 const RECORD_STATUSES = ["active", "ignored", "duplicate", "error"];
 const MAPPING_STATUSES = ["active", "inactive"];
 const UPLOAD_MODES = ["override", "amend"];
-const PRICE_MATCH_PERCENT_TOLERANCE = 0.10;
+const PRICE_MATCH_PERCENT_TOLERANCE = 0.15;
 const PRICE_MATCH_ABSOLUTE_TOLERANCE = 0.75;
 const PRICE_FIELDS = [
   { field: "cifUsd", currency: "USD" },
@@ -40,27 +40,21 @@ const CHANNEL_TYPE_FIELD_KEYS = [
 const CHANNEL_TYPE_ALIASES = {
   private: {
     channelGroup: "private",
-    priceFields: ["cifUsd"],
   },
   direct: {
     channelGroup: "private",
-    priceFields: ["cifUsd"],
   },
   private_sales: {
     channelGroup: "private",
-    priceFields: ["cifUsd"],
   },
   private_sale: {
     channelGroup: "private",
-    priceFields: ["cifUsd"],
   },
   prv: {
     channelGroup: "private",
-    priceFields: ["cifUsd"],
   },
   pvt: {
     channelGroup: "private",
-    priceFields: ["cifUsd"],
   },
   institution: {
     channelGroup: "institution",
@@ -380,6 +374,10 @@ const normalizeSalesRow = (row = {}, columnMapping = {}, fallback = {}) => {
 const validateSalesRow = (row) => {
   const missing = [];
   const freeQuantity = Number(row.freeQuantity || 0);
+  const hasInvalidQuantity = !Number.isFinite(row.quantity)
+    || row.quantity < 0
+    || freeQuantity < 0
+    || (row.quantity === 0 && freeQuantity <= 0);
   const hasValidSalesQuantity = Number.isFinite(row.quantity)
     && (row.quantity > 0 || (row.quantity === 0 && freeQuantity > 0));
 
@@ -391,15 +389,19 @@ const validateSalesRow = (row) => {
     missing.push("productName or productNickname");
   }
 
-  if (!hasValidSalesQuantity) {
-    missing.push("quantity");
+  if (hasInvalidQuantity || !hasValidSalesQuantity) {
+    return {
+      message: "Quantity must be greater than 0, or quantity can be 0 only when FOC quantity is greater than 0. Negative quantity or negative FOC quantity is not allowed.",
+      quantity: row.quantity,
+      freeQuantity,
+    };
   }
 
   if (!row.accountName && !row.shipToAccountName) {
     missing.push("accountName or shipToAccountName");
   }
 
-  return missing.length ? `Missing or invalid required fields: ${missing.join(", ")}` : null;
+  return missing.length ? { message: `Missing or invalid required fields: ${missing.join(", ")}` } : null;
 };
 
 const matchProduct = async (row, productCandidates = null) => {
@@ -652,6 +654,53 @@ const priceValuesMatch = (uploadedUnitValue, unitValue) => {
   return Math.abs(roundedUploaded - roundedUnit) <= 0.01;
 };
 
+const buildPricingCandidates = (product, channelLookup, hint) => (product?.channelPricing || [])
+  .map((pricing) => {
+    if (pricing.isAvailable === false || !pricingMatchesChannelHint(pricing, hint, channelLookup)) {
+      return null;
+    }
+
+    const channel = channelLookup.byId?.get(String(pricing.channelId));
+
+    return {
+      pricing,
+      channel,
+      channelKey: normalizeKey(channel?.channelKey || pricing.channelKey || pricing.channelName),
+      channelGroup: normalizeKey(channel?.channelGroup || pricing.channelGroup),
+    };
+  })
+  .filter(Boolean);
+
+const scorePricingCandidate = (candidate, comparablePriceFields, uploadedUnitValue) => {
+  const scores = comparablePriceFields
+    .map((priceField) => {
+      const unitValue = Number(candidate.pricing[priceField.field]) || 0;
+
+      if (unitValue <= 0 || uploadedUnitValue <= 0) {
+        return null;
+      }
+
+      return {
+        ...candidate,
+        matchedField: priceField,
+        unitValue,
+        difference: Math.abs(uploadedUnitValue - unitValue),
+        relativeDifference: Math.abs(uploadedUnitValue - unitValue) / unitValue,
+        matchesTolerance: priceValuesMatch(uploadedUnitValue, unitValue),
+      };
+    })
+    .filter(Boolean);
+
+  return scores.sort((left, right) => left.difference - right.difference)[0] || null;
+};
+
+const isDirectChannel = (candidate) => {
+  const key = normalizeKey(candidate?.channelKey);
+  const name = normalizeKey(candidate?.channel?.channelName || candidate?.pricing?.channelName);
+
+  return key === "direct" || name === "direct" || name.includes("direct");
+};
+
 const detectPriceFieldForPricing = (pricing, uploadedUnitValue, currency) => {
   if (!pricing || uploadedUnitValue <= 0) {
     return null;
@@ -712,41 +761,74 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
     }
   }
 
-  const comparablePriceFields = channelTypeHint?.priceFields && String(row.uploadedCurrency || "").toUpperCase() !== "AED"
-    ? PRICE_FIELDS.filter((priceField) => channelTypeHint.priceFields.includes(priceField.field))
+  const comparablePriceFields = channelTypeHint?.priceFields
+    ? getComparablePriceFields(row.uploadedCurrency).filter((priceField) => channelTypeHint.priceFields.includes(priceField.field))
     : getComparablePriceFields(row.uploadedCurrency);
 
   if (uploadedUnitValue > 0) {
-    const matches = (product.channelPricing || []).map((pricing) => {
-      if (pricing.isAvailable === false) {
-        return null;
+    const scoredCandidates = buildPricingCandidates(product, channelLookup, channelTypeHint)
+      .map((candidate) => scorePricingCandidate(candidate, comparablePriceFields, uploadedUnitValue))
+      .filter(Boolean)
+      .sort((left, right) => left.difference - right.difference);
+    const matches = scoredCandidates.filter((candidate) => candidate.matchesTolerance);
+
+    if (channelTypeHint?.channelGroup === "private" && scoredCandidates.length > 0) {
+      const directMatch = scoredCandidates.find(isDirectChannel);
+      const nonDirectMatches = scoredCandidates.filter((candidate) => !isDirectChannel(candidate));
+      const closestNonDirect = nonDirectMatches[0];
+      const bestMatch = scoredCandidates[0];
+
+      if (closestNonDirect && (!directMatch || closestNonDirect.difference + 0.05 < directMatch.difference)) {
+        const channel = closestNonDirect.channel
+          || await SalesChannel.findById(closestNonDirect.pricing.channelId).lean();
+
+        return {
+          channel,
+          pricing: closestNonDirect.pricing,
+          method: "sales_type_price_match",
+          detectedPriceBasis: closestNonDirect.matchedField.field,
+          detectedPriceCurrency: closestNonDirect.matchedField.currency,
+          uploadedUnitValue,
+          warning: null,
+          matchNote: "Detected by private salesType and closest private channel price",
+        };
       }
 
-      if (!pricingMatchesChannelHint(pricing, channelTypeHint, channelLookup)) {
-        return null;
+      if (directMatch && directMatch.matchesTolerance) {
+        const channel = directMatch.channel
+          || await SalesChannel.findById(directMatch.pricing.channelId).lean();
+
+        return {
+          channel,
+          pricing: directMatch.pricing,
+          method: "sales_type_price_match",
+          detectedPriceBasis: directMatch.matchedField.field,
+          detectedPriceCurrency: directMatch.matchedField.currency,
+          uploadedUnitValue,
+          warning: null,
+          matchNote: "Detected by private salesType and closest private channel price",
+        };
       }
 
-      const matchedField = comparablePriceFields.find((priceField) => {
-        const unitValue = Number(pricing[priceField.field]) || 0;
+      if (bestMatch.matchesTolerance) {
+        const channel = bestMatch.channel
+          || await SalesChannel.findById(bestMatch.pricing.channelId).lean();
 
-        if (unitValue <= 0) {
-          return false;
-        }
-
-        return priceValuesMatch(uploadedUnitValue, unitValue);
-      });
-
-      return matchedField
-        ? {
-          pricing,
-          matchedField,
-          difference: Math.abs(uploadedUnitValue - (Number(pricing[matchedField.field]) || 0)),
-        }
-        : null;
-    }).filter(Boolean);
+        return {
+          channel,
+          pricing: bestMatch.pricing,
+          method: "sales_type_price_match",
+          detectedPriceBasis: bestMatch.matchedField.field,
+          detectedPriceCurrency: bestMatch.matchedField.currency,
+          uploadedUnitValue,
+          warning: null,
+          matchNote: "Detected by private salesType and closest private channel price",
+        };
+      }
+    }
 
     if (matches.length === 1) {
-      const channel = channelLookup.byId?.get(String(matches[0].pricing.channelId))
+      const channel = matches[0].channel
         || await SalesChannel.findById(matches[0].pricing.channelId).lean();
       return {
         channel,
@@ -765,7 +847,7 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
       const nextMatch = sortedMatches[1];
 
       if (bestMatch.difference + 0.05 < nextMatch.difference) {
-        const channel = channelLookup.byId?.get(String(bestMatch.pricing.channelId))
+        const channel = bestMatch.channel
           || await SalesChannel.findById(bestMatch.pricing.channelId).lean();
 
         return {
@@ -944,6 +1026,76 @@ const buildSalesQuery = async (queryParams, user) => {
   return query;
 };
 
+const reprocessSalesRecord = async (record, context) => {
+  const row = {
+    invoiceNumber: record.invoiceNumber,
+    externalSalesReference: record.externalSalesReference,
+    salesDate: record.salesDate,
+    invoiceDate: record.invoiceDate,
+    month: record.month,
+    year: record.year,
+    accountName: record.accountName,
+    shipToAccountName: record.shipToAccountName,
+    accountExternalCode: record.accountExternalCode,
+    productName: record.productName,
+    productNickname: record.productNickname,
+    productExternalCode: record.productExternalCode,
+    quantity: Number(record.quantity || 0),
+    freeQuantity: Number(record.freeQuantity || 0),
+    uploadedSalesValue: Number(record.uploadedSalesValue || 0),
+    uploadedCurrency: record.uploadedCurrency,
+    channelName: record.channelName,
+    channelKey: record.channelKey,
+    channelType: record.salesType || record.salesTypeNormalized,
+  };
+
+  const productResult = await matchProduct(row, context.productCandidates);
+  const accountResult = await matchAccount(row, context.user, context.accountCandidates);
+  const channelResult = await detectSalesChannel(row, productResult.product, context.channelLookup);
+  const rowWarnings = [productResult.warning, accountResult.warning, channelResult.warning].filter(Boolean);
+  const rowMatchNotes = [channelResult.matchNote, ...rowWarnings].filter(Boolean);
+  const productMatched = Boolean(productResult.product);
+  const accountMatched = Boolean(accountResult.account);
+  const channelMatched = Boolean(channelResult.channel && channelResult.pricing);
+  const calculatedValues = buildCalculatedValues(row.quantity, channelResult.pricing);
+  const salesTypeHint = getChannelTypeHint(row.channelType);
+
+  record.accountId = accountResult.account?._id;
+  record.accountMatched = accountMatched;
+  record.productId = productResult.product?._id;
+  record.productName = row.productName || productResult.product?.productName;
+  record.productNickname = row.productNickname || productResult.product?.productNickname;
+  record.productMatched = productMatched;
+  record.channelId = channelResult.channel?._id;
+  record.channelName = channelResult.channel?.channelName || row.channelName;
+  record.channelKey = channelResult.channel?.channelKey || normalizeKey(row.channelKey);
+  record.channelMatched = channelMatched;
+  record.channelDetectionMethod = channelResult.method;
+  record.salesType = salesTypeHint?.normalizedValue || record.salesType;
+  record.salesTypeNormalized = salesTypeHint?.channelGroup || record.salesTypeNormalized;
+  record.uploadedUnitValue = channelResult.uploadedUnitValue ?? (row.quantity > 0 ? row.uploadedSalesValue / row.quantity : 0);
+  record.detectedPriceBasis = channelResult.detectedPriceBasis;
+  record.detectedPriceCurrency = channelResult.detectedPriceCurrency;
+  Object.assign(record, calculatedValues);
+  record.matchStatus = productMatched && accountMatched && channelMatched ? "matched" : "needs_review";
+  record.matchConfidence = record.matchStatus === "matched" ? 0.9 : 0;
+  record.matchNotes = rowMatchNotes.join("; ");
+  record.updatedBy = context.user._id;
+
+  await applySharedSalesToRecord(record);
+  await record.save();
+
+  return {
+    salesRecordId: record._id,
+    matchStatus: record.matchStatus,
+    channelMatched: record.channelMatched,
+    channelName: record.channelName,
+    channelKey: record.channelKey,
+    channelDetectionMethod: record.channelDetectionMethod,
+    matchNotes: record.matchNotes,
+  };
+};
+
 const normalizeMappingPayload = (body) => ({
   mappingName: body.mappingName,
   description: body.description,
@@ -1104,43 +1256,96 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
 
     const columnMapping = normalizeUploadColumnMapping(req.body, mapping);
     mapping = await persistUploadColumnMapping(req.body, columnMapping, req.currentUser, mapping);
+    const uploadSessionId = req.body.uploadSessionId
+      ? String(req.body.uploadSessionId).trim()
+      : undefined;
+    const chunkIndex = req.body.chunkIndex !== undefined ? Number(req.body.chunkIndex) : undefined;
+    const totalChunks = req.body.totalChunks !== undefined ? Number(req.body.totalChunks) : undefined;
+    const isFirstChunk = normalizeBoolean(req.body.isFirstChunk, chunkIndex === 0);
+    const isLastChunk = normalizeBoolean(
+      req.body.isLastChunk,
+      Number.isInteger(chunkIndex) && Number.isInteger(totalChunks) ? chunkIndex === totalChunks - 1 : false,
+    );
     const batch = await SalesUploadBatch.create({
       fileName: req.body.fileName,
       uploadedBy: req.currentUser._id,
       mappingId: mapping?._id,
       mappingName: mapping?.mappingName,
+      uploadSessionId,
+      chunkIndex: Number.isInteger(chunkIndex) ? chunkIndex : undefined,
+      totalChunks: Number.isInteger(totalChunks) && totalChunks > 0 ? totalChunks : undefined,
+      isFirstChunk,
+      isLastChunk,
       month: Number(req.body.month),
       year: Number(req.body.year),
       totalRows: req.body.rows.length,
       status: "processing",
       columnMapping,
-      notes: [req.body.notes, `Upload mode: ${uploadMode || "amend"}`].filter(Boolean).join(" | "),
+      notes: [
+        req.body.notes,
+        `Upload mode: ${uploadMode || "amend"}`,
+        uploadSessionId ? `Upload session: ${uploadSessionId}` : null,
+        Number.isInteger(chunkIndex) ? `Chunk: ${chunkIndex + 1}${Number.isInteger(totalChunks) ? `/${totalChunks}` : ""}` : null,
+      ].filter(Boolean).join(" | "),
     });
 
     if (uploadMode === "override") {
-      await SalesRecord.updateMany(
-        {
+      const sessionOverrideAlreadyApplied = uploadSessionId
+        ? await SalesUploadBatch.exists({
+          _id: { $ne: batch._id },
+          uploadSessionId,
+          year: Number(req.body.year),
+          month: Number(req.body.month),
+          overrideApplied: true,
+        })
+        : null;
+
+      if (!sessionOverrideAlreadyApplied) {
+        const cleanupQuery = {
           year: Number(req.body.year),
           month: Number(req.body.month),
           status: "active",
           isActive: true,
-        },
-        {
-          $set: {
-            status: "ignored",
-            isActive: false,
-            updatedBy: req.currentUser._id,
+        };
+
+        if (uploadSessionId) {
+          const sessionBatches = await SalesUploadBatch.find({
+            _id: { $ne: batch._id },
+            uploadSessionId,
+            year: Number(req.body.year),
+            month: Number(req.body.month),
+          }).select("_id").lean();
+
+          if (sessionBatches.length > 0) {
+            cleanupQuery.salesUploadBatchId = { $nin: sessionBatches.map((sessionBatch) => sessionBatch._id) };
+          }
+        }
+
+        await SalesRecord.updateMany(
+          cleanupQuery,
+          {
+            $set: {
+              status: "ignored",
+              isActive: false,
+              updatedBy: req.currentUser._id,
+            },
           },
-        },
-      );
-      await SalesUploadBatch.updateMany(
-        {
-          _id: { $ne: batch._id },
-          year: Number(req.body.year),
-          month: Number(req.body.month),
-        },
-        { $set: { notes: `Overridden by batch ${batch._id}` } },
-      );
+        );
+        await SalesUploadBatch.updateMany(
+          {
+            _id: { $ne: batch._id },
+            year: Number(req.body.year),
+            month: Number(req.body.month),
+            ...(uploadSessionId ? { uploadSessionId: { $ne: uploadSessionId } } : {}),
+          },
+          { $set: { notes: `Overridden by batch ${batch._id}` } },
+        );
+        batch.overrideApplied = true;
+      } else {
+        batch.notes = [batch.notes, "Override cleanup skipped because this upload session already applied it"]
+          .filter(Boolean)
+          .join(" | ");
+      }
     }
     const createdRecords = [];
     const failed = [];
@@ -1177,7 +1382,13 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         const rowValidationError = validateSalesRow(row);
 
         if (rowValidationError) {
-          failed.push({ rowNumber, message: rowValidationError, rawRow });
+          failed.push({
+            rowNumber,
+            message: rowValidationError.message || rowValidationError,
+            quantity: rowValidationError.quantity,
+            freeQuantity: rowValidationError.freeQuantity,
+            rawRow,
+          });
           continue;
         }
 
@@ -1201,6 +1412,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         const accountResult = await matchAccount(row, req.currentUser, accountCandidates);
         const channelResult = await detectSalesChannel(row, productResult.product, channelLookup);
         const rowWarnings = [productResult.warning, accountResult.warning, channelResult.warning].filter(Boolean);
+        const rowMatchNotes = [channelResult.matchNote, ...rowWarnings].filter(Boolean);
         const productMatched = Boolean(productResult.product);
         const accountMatched = Boolean(accountResult.account);
         const channelMatched = Boolean(channelResult.channel && channelResult.pricing);
@@ -1253,7 +1465,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           ...calculatedValues,
           matchStatus,
           matchConfidence: matchStatus === "matched" ? 0.9 : 0,
-          matchNotes: rowWarnings.join("; "),
+          matchNotes: rowMatchNotes.join("; "),
           status: isDuplicate ? "duplicate" : "active",
           isActive: !isDuplicate,
           rawRow,
@@ -1701,6 +1913,79 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
   }
 });
 
+router.post("/reprocess-channel-detection", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const baseQuery = await getAccessibleSalesQuery(req.currentUser);
+    const query = { ...baseQuery };
+
+    if (Array.isArray(req.body.salesRecordIds) && req.body.salesRecordIds.length > 0) {
+      const invalidId = req.body.salesRecordIds.find((id) => !isValidObjectId(id));
+
+      if (invalidId) {
+        return res.status(400).json({ success: false, message: "salesRecordIds must contain valid MongoDB ObjectIds" });
+      }
+
+      query._id = { $in: req.body.salesRecordIds.map((id) => new mongoose.Types.ObjectId(id)) };
+    } else if (req.body.batchId) {
+      if (!isValidObjectId(req.body.batchId)) {
+        return res.status(400).json({ success: false, message: "batchId must be a valid MongoDB ObjectId" });
+      }
+
+      query.salesUploadBatchId = new mongoose.Types.ObjectId(req.body.batchId);
+    } else if (req.body.year && req.body.month) {
+      const validationError = validateMonthYear(req.body.month, req.body.year);
+
+      if (validationError) {
+        return res.status(400).json({ success: false, message: validationError });
+      }
+
+      query.year = Number(req.body.year);
+      query.month = Number(req.body.month);
+      query.status = req.body.includeInactive ? { $in: RECORD_STATUSES } : "active";
+      query.isActive = req.body.includeInactive ? { $in: [true, false] } : true;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Provide batchId, year/month, or salesRecordIds",
+      });
+    }
+
+    const [accountCandidates, productCandidates, activeChannels, records] = await Promise.all([
+      Account.find({}).lean(),
+      Product.find({ status: "active", isActive: true }).lean(),
+      SalesChannel.find({ status: "active", isActive: true }).lean(),
+      SalesRecord.find(query).limit(1000),
+    ]);
+    const channelLookup = {
+      byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
+      byKey: new Map(activeChannels.map((channel) => [normalizeKey(channel.channelKey), channel])),
+      byName: new Map(activeChannels.map((channel) => [normalizeText(channel.channelName), channel])),
+    };
+    const context = {
+      user: req.currentUser,
+      accountCandidates,
+      productCandidates,
+      channelLookup,
+    };
+    const results = [];
+
+    for (const record of records) {
+      results.push(await reprocessSalesRecord(record, context));
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales channel detection reprocessed",
+      data: {
+        processedCount: results.length,
+        results,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
   try {
     const baseQuery = await buildSalesQuery(req.query, req.currentUser);
@@ -2077,6 +2362,12 @@ router.get("/", auth, loadSalesActor, async (req, res, next) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const query = await buildSalesQuery(req.query, req.currentUser);
+
+    if (!req.query.status) {
+      query.status = "active";
+      query.isActive = true;
+    }
+
     const [records, total] = await Promise.all([
       SalesRecord.find(query).sort({ salesDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       SalesRecord.countDocuments(query),
@@ -2246,5 +2537,13 @@ router.delete("/:id", auth, loadSalesActor, requireManager, async (req, res, nex
     return next(error);
   }
 });
+
+router._test = {
+  detectSalesChannel,
+  getChannelTypeHint,
+  normalizeSalesRow,
+  validateSalesRow,
+  priceValuesMatch,
+};
 
 module.exports = router;

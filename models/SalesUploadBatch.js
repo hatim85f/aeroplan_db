@@ -12,6 +12,12 @@ const uploadRowIssueSchema = new Schema(
       type: String,
       trim: true,
     },
+    quantity: {
+      type: Number,
+    },
+    freeQuantity: {
+      type: Number,
+    },
     rawRow: {
       type: Schema.Types.Mixed,
     },
@@ -44,6 +50,32 @@ const salesUploadBatchSchema = new Schema(
     mappingName: {
       type: String,
       trim: true,
+    },
+    uploadSessionId: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    chunkIndex: {
+      type: Number,
+      min: 0,
+    },
+    totalChunks: {
+      type: Number,
+      min: 1,
+    },
+    isFirstChunk: {
+      type: Boolean,
+      default: false,
+    },
+    isLastChunk: {
+      type: Boolean,
+      default: false,
+    },
+    overrideApplied: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     month: {
       type: Number,
@@ -116,6 +148,7 @@ const salesUploadBatchSchema = new Schema(
 
 salesUploadBatchSchema.index({ year: 1, month: 1, status: 1 });
 salesUploadBatchSchema.index({ uploadedBy: 1, uploadDate: -1 });
+salesUploadBatchSchema.index({ uploadSessionId: 1, year: 1, month: 1 });
 salesUploadBatchSchema.index({ fileName: "text", mappingName: "text", notes: "text" });
 
 module.exports = mongoose.model("SalesUploadBatch", salesUploadBatchSchema);
