@@ -87,6 +87,47 @@ const normalizeText = (value) => String(value || "")
   .replace(/\s+/g, " ")
   .trim();
 
+const getTextTokens = (value) => normalizeText(value).split(" ").filter(Boolean);
+
+const inferAccountType = (accountName) => {
+  const normalizedName = normalizeText(accountName);
+
+  if (normalizedName.includes("hospital")) {
+    return "hospital";
+  }
+
+  if (normalizedName.includes("pharmacy")) {
+    return "pharmacy";
+  }
+
+  if (normalizedName.includes("drug")) {
+    return "drugstore";
+  }
+
+  if (normalizedName.includes("clinic") || normalizedName.includes("medical center")) {
+    return "clinic";
+  }
+
+  return "other";
+};
+
+const getAccountSimilarityScore = (input, accountName) => {
+  const inputTokens = getTextTokens(input);
+  const accountTokens = getTextTokens(accountName);
+
+  if (inputTokens.length === 0 || accountTokens.length === 0) {
+    return 0;
+  }
+
+  const commonTokens = inputTokens.filter((token) => accountTokens.includes(token));
+  const tokenScore = commonTokens.length / inputTokens.length;
+  const normalizedInput = normalizeText(input);
+  const normalizedAccount = normalizeText(accountName);
+  const containsScore = normalizedAccount.includes(normalizedInput) || normalizedInput.includes(normalizedAccount) ? 1 : 0;
+
+  return Math.max(tokenScore, containsScore);
+};
+
 const normalizeKey = (value) => String(value || "")
   .trim()
   .toLowerCase()
@@ -390,7 +431,32 @@ const matchProduct = async (row) => {
   return { product: null, warning: "Product could not be matched" };
 };
 
-const matchAccount = async (row) => {
+const createPlaceholderAccount = async (row, user) => {
+  const accountName = String(row.shipToAccountName || row.accountName || "").trim();
+
+  if (!accountName) {
+    return { account: null, warning: "Account could not be matched" };
+  }
+
+  const account = await Account.create({
+    accountName,
+    accountType: inferAccountType(accountName),
+    keyContact: "Placeholder - please update",
+    area: "Placeholder - please update",
+    territory: "Placeholder - please update",
+    location: {
+      address: "Placeholder - please update",
+    },
+    createdBy: user?._id,
+  });
+
+  return {
+    account: account.toObject(),
+    warning: `Placeholder account created for "${accountName}". Please update account details.`,
+  };
+};
+
+const matchAccount = async (row, user) => {
   const inputs = [
     row.shipToAccountName,
     row.accountName,
@@ -411,9 +477,9 @@ const matchAccount = async (row) => {
   }
 
   const normalizedInputs = inputs.map(normalizeText).filter(Boolean);
+  const candidates = await Account.find({}).lean();
 
   if (normalizedInputs.length > 0) {
-    const candidates = await Account.find({}).lean();
     const matches = candidates.filter((account) => normalizedInputs.includes(normalizeText(account.accountName)));
 
     if (matches.length === 1) {
@@ -425,7 +491,31 @@ const matchAccount = async (row) => {
     }
   }
 
-  return { account: null, warning: "Account could not be matched" };
+  for (const input of inputs) {
+    const nearMatches = candidates
+      .map((account) => ({
+        account,
+        score: getAccountSimilarityScore(input, account.accountName),
+      }))
+      .filter((candidate) => candidate.score >= 0.8)
+      .sort((left, right) => right.score - left.score);
+
+    if (nearMatches.length === 1) {
+      return {
+        account: nearMatches[0].account,
+        warning: `Account matched by near name: "${input}" -> "${nearMatches[0].account.accountName}"`,
+      };
+    }
+
+    if (nearMatches.length > 1 && nearMatches[0].score > nearMatches[1].score) {
+      return {
+        account: nearMatches[0].account,
+        warning: `Account matched by nearest name: "${input}" -> "${nearMatches[0].account.accountName}"`,
+      };
+    }
+  }
+
+  return createPlaceholderAccount(row, user);
 };
 
 const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -944,7 +1034,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         seenKeys.add(duplicateKey);
 
         const productResult = await matchProduct(row);
-        const accountResult = await matchAccount(row);
+        const accountResult = await matchAccount(row, req.currentUser);
         const channelResult = await detectSalesChannel(row, productResult.product);
         const rowWarnings = [productResult.warning, accountResult.warning, channelResult.warning].filter(Boolean);
         const productMatched = Boolean(productResult.product);
