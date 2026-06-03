@@ -379,6 +379,9 @@ const normalizeSalesRow = (row = {}, columnMapping = {}, fallback = {}) => {
 
 const validateSalesRow = (row) => {
   const missing = [];
+  const freeQuantity = Number(row.freeQuantity || 0);
+  const hasValidSalesQuantity = Number.isFinite(row.quantity)
+    && (row.quantity > 0 || (row.quantity === 0 && freeQuantity > 1));
 
   if (!row.salesDate && (!row.month || !row.year)) {
     missing.push("salesDate or month/year");
@@ -388,7 +391,7 @@ const validateSalesRow = (row) => {
     missing.push("productName or productNickname");
   }
 
-  if (!Number.isFinite(row.quantity) || row.quantity <= 0) {
+  if (!hasValidSalesQuantity) {
     missing.push("quantity");
   }
 
@@ -1298,8 +1301,13 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       const quantity = Number(item.quantity);
       const freeQuantity = Number(item.freeQuantity || 0);
 
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        failedItems.push({ index, rowNumber, productId: item.productId, reason: "quantity must be a number greater than 0" });
+      if (!Number.isFinite(quantity) || (quantity <= 0 && !(quantity === 0 && freeQuantity > 1))) {
+        failedItems.push({
+          index,
+          rowNumber,
+          productId: item.productId,
+          reason: "quantity must be greater than 0, or equal to 0 when freeQuantity is greater than 1",
+        });
         continue;
       }
 
