@@ -204,6 +204,7 @@ const normalizeChannelPricing = async (channelPricing, { partial = false, contex
       channelId: salesChannel._id,
       channelName: salesChannel.channelName,
       channelKey: salesChannel.channelKey,
+      channelGroup: salesChannel.channelGroup || "private",
       isAvailable: normalizeBoolean(item.isAvailable, true),
       cifUsd: normalizeNumber(item.cifUsd),
       wholesaleAed: normalizeNumber(item.wholesaleAed),

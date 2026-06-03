@@ -19,6 +19,12 @@ const channelPricingSchema = new Schema(
       trim: true,
       lowercase: true,
     },
+    channelGroup: {
+      type: String,
+      enum: ["private", "institution", "government", "tender", "other"],
+      default: "private",
+      index: true,
+    },
     isAvailable: {
       type: Boolean,
       default: true,
@@ -162,6 +168,7 @@ productSchema.index({
 });
 productSchema.index({ "channelPricing.channelId": 1 });
 productSchema.index({ "channelPricing.channelKey": 1 });
+productSchema.index({ "channelPricing.channelGroup": 1 });
 productSchema.index({ lineId: 1, status: 1, isActive: 1 });
 
 module.exports = mongoose.model("Product", productSchema);
