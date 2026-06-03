@@ -180,11 +180,17 @@ const salesRecordSchema = new Schema(
     },
     channelDetectionMethod: {
       type: String,
-      enum: ["sheet_channel", "account_mapping", "price_match", "manual", "unknown"],
+      enum: ["sheet_channel", "account_mapping", "price_match", "sales_type_price_match", "manual", "unknown"],
       default: "unknown",
       index: true,
     },
     salesType: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
+    salesTypeNormalized: {
       type: String,
       trim: true,
       lowercase: true,

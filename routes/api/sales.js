@@ -19,7 +19,8 @@ const MATCH_STATUSES = ["unmatched", "partially_matched", "matched", "needs_revi
 const RECORD_STATUSES = ["active", "ignored", "duplicate", "error"];
 const MAPPING_STATUSES = ["active", "inactive"];
 const UPLOAD_MODES = ["override", "amend"];
-const PRICE_MATCH_TOLERANCE = 0.03;
+const PRICE_MATCH_PERCENT_TOLERANCE = 0.10;
+const PRICE_MATCH_ABSOLUTE_TOLERANCE = 0.75;
 const PRICE_FIELDS = [
   { field: "cifUsd", currency: "USD" },
   { field: "wholesaleAed", currency: "AED" },
@@ -38,43 +39,46 @@ const CHANNEL_TYPE_FIELD_KEYS = [
 ];
 const CHANNEL_TYPE_ALIASES = {
   private: {
-    channelKeys: ["direct", "private", "upp"],
+    channelGroup: "private",
     priceFields: ["cifUsd"],
   },
   direct: {
-    channelKeys: ["direct", "private", "upp"],
+    channelGroup: "private",
     priceFields: ["cifUsd"],
   },
   private_sales: {
-    channelKeys: ["direct", "private", "upp"],
+    channelGroup: "private",
     priceFields: ["cifUsd"],
   },
   private_sale: {
-    channelKeys: ["direct", "private", "upp"],
+    channelGroup: "private",
     priceFields: ["cifUsd"],
   },
   prv: {
-    channelKeys: ["direct", "private", "upp"],
+    channelGroup: "private",
     priceFields: ["cifUsd"],
   },
   pvt: {
-    channelKeys: ["direct", "private", "upp"],
+    channelGroup: "private",
     priceFields: ["cifUsd"],
   },
   institution: {
-    channelKeys: ["institution", "institutional"],
+    channelGroup: "institution",
   },
   institutional: {
-    channelKeys: ["institution", "institutional"],
+    channelGroup: "institution",
   },
   institute: {
-    channelKeys: ["institution", "institutional"],
+    channelGroup: "institution",
   },
   inst: {
-    channelKeys: ["institution", "institutional"],
+    channelGroup: "institution",
   },
   tender: {
-    channelKeys: ["institution", "institutional"],
+    channelGroup: "tender",
+  },
+  government: {
+    channelGroup: "government",
   },
 };
 
@@ -574,18 +578,34 @@ const getChannelTypeHint = (value) => {
   return {
     rawValue: value,
     normalizedValue,
-    channelKeys: alias?.channelKeys || [normalizedValue],
+    channelGroup: alias?.channelGroup || normalizedValue,
     priceFields: alias?.priceFields,
   };
 };
 
-const pricingMatchesChannelHint = (pricing, hint) => {
+const pricingMatchesChannelHint = (pricing, hint, channelLookup = {}) => {
   if (!hint) {
     return true;
   }
 
+  const channel = channelLookup.byId?.get(String(pricing?.channelId));
+  const channelGroup = normalizeKey(channel?.channelGroup || pricing?.channelGroup);
+
+  if (channelGroup) {
+    return channelGroup === normalizeKey(hint.channelGroup);
+  }
+
   const pricingKey = normalizeKey(pricing?.channelKey || pricing?.channelName);
-  return hint.channelKeys.some((channelKey) => pricingKey === normalizeKey(channelKey));
+
+  if (hint.channelGroup === "private") {
+    return ["direct", "private", "upp"].includes(pricingKey);
+  }
+
+  if (hint.channelGroup === "institution") {
+    return ["institution", "institutional"].includes(pricingKey);
+  }
+
+  return pricingKey === normalizeKey(hint.channelGroup);
 };
 
 const pricingMatchesUploadedCurrency = (pricing, currency) => {
@@ -611,7 +631,11 @@ const priceValuesMatch = (uploadedUnitValue, unitValue) => {
 
   const relativeDifference = Math.abs(uploadedUnitValue - unitValue) / unitValue;
 
-  if (relativeDifference <= PRICE_MATCH_TOLERANCE) {
+  if (relativeDifference <= PRICE_MATCH_PERCENT_TOLERANCE) {
+    return true;
+  }
+
+  if (Math.abs(uploadedUnitValue - unitValue) <= PRICE_MATCH_ABSOLUTE_TOLERANCE) {
     return true;
   }
 
@@ -695,7 +719,7 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
         return null;
       }
 
-      if (!pricingMatchesChannelHint(pricing, channelTypeHint)) {
+      if (!pricingMatchesChannelHint(pricing, channelTypeHint, channelLookup)) {
         return null;
       }
 
@@ -709,7 +733,13 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
         return priceValuesMatch(uploadedUnitValue, unitValue);
       });
 
-      return matchedField ? { pricing, matchedField } : null;
+      return matchedField
+        ? {
+          pricing,
+          matchedField,
+          difference: Math.abs(uploadedUnitValue - (Number(pricing[matchedField.field]) || 0)),
+        }
+        : null;
     }).filter(Boolean);
 
     if (matches.length === 1) {
@@ -718,7 +748,7 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
       return {
         channel,
         pricing: matches[0].pricing,
-        method: channelTypeHint ? "sheet_channel" : "price_match",
+        method: channelTypeHint ? "sales_type_price_match" : "price_match",
         detectedPriceBasis: matches[0].matchedField.field,
         detectedPriceCurrency: matches[0].matchedField.currency,
         uploadedUnitValue,
@@ -727,10 +757,29 @@ const detectSalesChannel = async (row, product, channelLookup = {}) => {
     }
 
     if (matches.length > 1) {
+      const sortedMatches = [...matches].sort((left, right) => left.difference - right.difference);
+      const bestMatch = sortedMatches[0];
+      const nextMatch = sortedMatches[1];
+
+      if (bestMatch.difference + 0.05 < nextMatch.difference) {
+        const channel = channelLookup.byId?.get(String(bestMatch.pricing.channelId))
+          || await SalesChannel.findById(bestMatch.pricing.channelId).lean();
+
+        return {
+          channel,
+          pricing: bestMatch.pricing,
+          method: channelTypeHint ? "sales_type_price_match" : "price_match",
+          detectedPriceBasis: bestMatch.matchedField.field,
+          detectedPriceCurrency: bestMatch.matchedField.currency,
+          uploadedUnitValue,
+          warning: null,
+        };
+      }
+
       return {
         channel: null,
         pricing: null,
-        method: channelTypeHint ? "sheet_channel" : "price_match",
+        method: channelTypeHint ? "sales_type_price_match" : "price_match",
         uploadedUnitValue,
         warning: channelTypeHint
           ? `Multiple sales channels matched by ${row.channelType} and uploaded unit value`
@@ -1113,6 +1162,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           channelMatched,
           channelDetectionMethod: channelResult.method,
           salesType: getChannelTypeHint(row.channelType)?.normalizedValue,
+          salesTypeNormalized: getChannelTypeHint(row.channelType)?.channelGroup,
           quantity: row.quantity,
           freeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,

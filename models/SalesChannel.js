@@ -36,6 +36,12 @@ const salesChannelSchema = new Schema(
       default: false,
       index: true,
     },
+    channelGroup: {
+      type: String,
+      enum: ["private", "institution", "government", "tender", "other"],
+      default: "private",
+      index: true,
+    },
     defaultTargetValueBasis: {
       type: String,
       enum: ["cifUsd", "wholesaleAed", "retailAed"],
