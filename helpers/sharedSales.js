@@ -96,16 +96,18 @@ const getBaseUploadedSalesValue = (record) => (
   Number(record.rawUploadedSalesValue ?? record.rawRow?.salesValue ?? record.uploadedSalesValue) || 0
 );
 
+const isNil = (value) => value === undefined || value === null;
+
 const ensureRawSalesValues = (record) => {
-  if (record.rawQuantity === undefined || record.rawQuantity === null) {
+  if (isNil(record.rawQuantity)) {
     record.rawQuantity = Number(record.quantity) || 0;
   }
 
-  if (record.rawFreeQuantity === undefined || record.rawFreeQuantity === null) {
+  if (isNil(record.rawFreeQuantity)) {
     record.rawFreeQuantity = Number(record.freeQuantity) || 0;
   }
 
-  if (record.rawUploadedSalesValue === undefined || record.rawUploadedSalesValue === null) {
+  if (isNil(record.rawUploadedSalesValue)) {
     record.rawUploadedSalesValue = Number(record.uploadedSalesValue) || 0;
   }
 };
@@ -328,6 +330,235 @@ const recalculateSharedSales = async (input = {}) => {
   };
 };
 
+const isRuleApplicableToRecord = (rule, record) => {
+  if (String(rule.accountId) !== String(record.accountId)) {
+    return false;
+  }
+
+  if (rule.productId && String(rule.productId) !== String(record.productId)) {
+    return false;
+  }
+
+  if (rule.channelId && String(rule.channelId) !== String(record.channelId)) {
+    return false;
+  }
+
+  const salesDate = parseDate(record.salesDate);
+
+  if (rule.startDate && salesDate && new Date(rule.startDate) > salesDate) {
+    return false;
+  }
+
+  if (rule.endDate && salesDate && new Date(rule.endDate) < salesDate) {
+    return false;
+  }
+
+  return true;
+};
+
+const buildUserAreaMaps = (areas = []) => {
+  const managerMap = new Map();
+  const userMap = new Map();
+
+  areas.forEach((area) => {
+    if (area.managerId) {
+      managerMap.set(String(area.managerId), area);
+    }
+
+    (area.userIds || []).forEach((userId) => {
+      userMap.set(String(userId), area);
+    });
+  });
+
+  return { managerMap, userMap };
+};
+
+const getRecordAreaFromMaps = (record, areaMaps) => {
+  const userId = String(record.createdBy || record.updatedBy || "");
+
+  return areaMaps.managerMap.get(userId) || areaMaps.userMap.get(userId) || null;
+};
+
+const buildOptimizedShareEntry = (record, rule) => {
+  const sharePercentage = Number(rule.sharePercentage) || 0;
+  const ratio = sharePercentage / 100;
+  const quantity = getBaseQuantity(record);
+
+  return {
+    areaId: rule.areaId?._id || rule.areaId,
+    areaName: rule.areaId?.areaName,
+    sharePercentage,
+    sharedQuantity: quantity * ratio,
+    sharedFreeQuantity: getBaseFreeQuantity(record) * ratio,
+    sharedCalculatedCifUsd: quantity * (Number(record.unitCifUsd) || 0) * ratio,
+    sharedCalculatedWholesaleAed: quantity * (Number(record.unitWholesaleAed) || 0) * ratio,
+    sharedCalculatedRetailAed: quantity * (Number(record.unitRetailAed) || 0) * ratio,
+    ruleId: rule._id,
+  };
+};
+
+const buildRecordShareUpdate = (record, areaShares) => {
+  const areaId = record.areaId ? String(record.areaId) : "";
+  const matchingShare = areaShares.find((areaShare) => String(areaShare.areaId) === areaId);
+
+  if (!matchingShare) {
+    return { values: {}, applied: false };
+  }
+
+  const ratio = (Number(matchingShare.sharePercentage) || 0) / 100;
+  const quantity = Number(matchingShare.sharedQuantity) || 0;
+  const freeQuantity = Number(matchingShare.sharedFreeQuantity) || 0;
+  const calculatedCifUsd = Number(matchingShare.sharedCalculatedCifUsd) || 0;
+  const calculatedWholesaleAed = Number(matchingShare.sharedCalculatedWholesaleAed) || 0;
+  const calculatedRetailAed = Number(matchingShare.sharedCalculatedRetailAed) || 0;
+
+  return {
+    applied: true,
+    values: {
+      quantity,
+      freeQuantity,
+      totalQuantityWithFoc: quantity + freeQuantity,
+      uploadedSalesValue: getBaseUploadedSalesValue(record) * ratio,
+      calculatedCifUsd,
+      calculatedWholesaleAed,
+      calculatedRetailAed,
+      targetCalculatedValue: quantity * (Number(record.targetUnitValue) || 0),
+      calculatedValueSnapshots: {
+        cifUsd: {
+          value: calculatedCifUsd,
+          currency: "USD",
+        },
+        wholesaleAed: {
+          value: calculatedWholesaleAed,
+          currency: "AED",
+        },
+        retailAed: {
+          value: calculatedRetailAed,
+          currency: "AED",
+        },
+      },
+    },
+  };
+};
+
+const recalculateSharedSalesOptimized = async (input = {}) => {
+  const query = buildSalesRecordRecalculationQuery(input);
+
+  if (input.areaId && isValidObjectId(input.areaId) && !query.accountId) {
+    const rules = await SharedSalesRule.find({
+      areaId: toObjectId(input.areaId),
+      status: "active",
+      isActive: true,
+    }).select("accountId").lean();
+    const accountIds = [...new Set(rules.map((rule) => String(rule.accountId)))].map(toObjectId).filter(Boolean);
+    query.accountId = accountIds.length > 0 ? { $in: accountIds } : null;
+  }
+
+  const [records, rules, areas] = await Promise.all([
+    SalesRecord.find(query).lean(),
+    SharedSalesRule.find({ status: "active", isActive: true })
+      .populate("areaId", "areaName")
+      .lean(),
+    Area.find({ status: "active", isActive: true }).select("_id areaName managerId userIds").lean(),
+  ]);
+  const areaMaps = buildUserAreaMaps(areas);
+  const rulesByAccount = new Map();
+
+  rules.forEach((rule) => {
+    const key = String(rule.accountId);
+    const list = rulesByAccount.get(key) || [];
+    list.push(rule);
+    rulesByAccount.set(key, list);
+  });
+
+  const operations = [];
+  const warnings = [];
+  let areaFilledCount = 0;
+  let recordShareAppliedCount = 0;
+  let sharedSalesAppliedCount = 0;
+
+  for (const record of records) {
+    try {
+      const updateValues = {};
+
+      if (isNil(record.rawQuantity)) {
+        updateValues.rawQuantity = Number(record.quantity) || 0;
+        record.rawQuantity = updateValues.rawQuantity;
+      }
+
+      if (isNil(record.rawFreeQuantity)) {
+        updateValues.rawFreeQuantity = Number(record.freeQuantity) || 0;
+        record.rawFreeQuantity = updateValues.rawFreeQuantity;
+      }
+
+      if (isNil(record.rawUploadedSalesValue)) {
+        updateValues.rawUploadedSalesValue = Number(record.uploadedSalesValue) || 0;
+        record.rawUploadedSalesValue = updateValues.rawUploadedSalesValue;
+      }
+
+      if (!record.areaId) {
+        const area = getRecordAreaFromMaps(record, areaMaps);
+
+        if (area) {
+          updateValues.areaId = area._id;
+          updateValues.areaName = area.areaName;
+          record.areaId = area._id;
+          record.areaName = area.areaName;
+          areaFilledCount += 1;
+        }
+      }
+
+      const matchedRules = (rulesByAccount.get(String(record.accountId)) || [])
+        .filter((rule) => isRuleApplicableToRecord(rule, record));
+      const areaShares = matchedRules.map((rule) => buildOptimizedShareEntry(record, rule));
+
+      updateValues.areaShares = areaShares;
+      updateValues.sharedSalesApplied = areaShares.length > 0;
+
+      if (areaShares.length > 0) {
+        sharedSalesAppliedCount += 1;
+      }
+
+      if (input.applyRecordShare) {
+        const shareUpdate = buildRecordShareUpdate(record, areaShares);
+
+        if (shareUpdate.applied) {
+          Object.assign(updateValues, shareUpdate.values);
+          recordShareAppliedCount += 1;
+        }
+      }
+
+      updateValues.updatedBy = input.updatedBy || record.updatedBy;
+      updateValues.updatedAt = new Date();
+
+      operations.push({
+        updateOne: {
+          filter: { _id: record._id },
+          update: { $set: updateValues },
+        },
+      });
+    } catch (error) {
+      warnings.push({
+        salesRecordId: record._id,
+        message: error.message || "Failed to recalculate shared sales",
+      });
+    }
+  }
+
+  if (operations.length > 0 && input.apply !== false) {
+    await SalesRecord.bulkWrite(operations, { ordered: false });
+  }
+
+  return {
+    matchedCount: records.length,
+    updatedCount: input.apply === false ? 0 : operations.length,
+    areaFilledCount,
+    recordShareAppliedCount,
+    sharedSalesAppliedCount,
+    warnings,
+  };
+};
+
 const buildRuleRecalculationInput = (rule, input = {}) => {
   const recalculationInput = {
     accountId: rule.accountId,
@@ -354,4 +585,5 @@ module.exports = {
   buildSalesRecordRecalculationQuery,
   calculateAreaShares,
   recalculateSharedSales,
+  recalculateSharedSalesOptimized,
 };

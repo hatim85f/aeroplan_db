@@ -12,7 +12,7 @@ const SalesSheetMapping = require("../../models/SalesSheetMapping");
 const SalesUploadBatch = require("../../models/SalesUploadBatch");
 const TargetAssignment = require("../../models/TargetAssignment");
 const User = require("../../models/User");
-const { applySharedSalesToRecord, recalculateSharedSales } = require("../../helpers/sharedSales");
+const { applySharedSalesToRecord, recalculateSharedSales, recalculateSharedSalesOptimized } = require("../../helpers/sharedSales");
 const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
 
@@ -2771,35 +2771,18 @@ router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (
       updatedBy: req.currentUser._id,
     };
 
-    setImmediate(() => {
-      recalculateSharedSales(input).then((result) => {
-        console.log("Shared sales background apply completed:", {
-          matched: result.matchedCount,
-          updated: result.updatedCount,
-          areaIdsAdded: result.areaFilledCount,
-          sharedSalesApplied: result.sharedSalesAppliedCount,
-          recordQuantitiesUpdated: result.recordShareAppliedCount,
-          warnings: result.warnings.length,
-        });
-      }).catch((error) => {
-        console.error("Shared sales background apply failed", error);
-      });
-    });
+    const result = await recalculateSharedSalesOptimized(input);
 
-    return res.status(202).json({
+    return res.status(200).json({
       success: true,
-      message: "Shared sales apply started",
+      message: "Shared sales applied successfully",
       data: {
-        started: true,
-        scope: {
-          year: input.year,
-          month: input.month,
-          salesRecordIds: input.salesRecordIds,
-          accountId: input.accountId,
-          productId: input.productId,
-          channelId: input.channelId,
-          areaId: input.areaId,
-        },
+        matched: result.matchedCount,
+        updated: result.updatedCount,
+        areaIdsAdded: result.areaFilledCount,
+        sharedSalesApplied: result.sharedSalesAppliedCount,
+        recordQuantitiesUpdated: result.recordShareAppliedCount,
+        warnings: result.warnings,
       },
     });
   } catch (error) {
