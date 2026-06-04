@@ -58,11 +58,8 @@ const buildDuplicateKey = (record) => {
 
 const hasAllCoreMatches = (record) => Boolean(record.productMatched && record.accountMatched && record.channelMatched);
 
-const buildCleanupQuery = async (input = {}) => {
-  const query = {
-    status: "active",
-    isActive: true,
-  };
+const buildCleanupScopeQuery = async (input = {}) => {
+  const query = {};
 
   if (input.uploadSessionId) {
     const batches = await SalesUploadBatch.find({
@@ -91,10 +88,20 @@ const buildCleanupQuery = async (input = {}) => {
 };
 
 const cleanupDuplicateSalesRecords = async (input = {}) => {
-  const query = await buildCleanupQuery(input);
-  const records = await SalesRecord.find(query)
+  const scopeQuery = await buildCleanupScopeQuery(input);
+  const activeQuery = {
+    ...scopeQuery,
+    status: "active",
+    isActive: true,
+  };
+  const records = await SalesRecord.find(activeQuery)
     .select("_id salesUploadBatchId invoiceNumber salesDate month year accountId accountName shipToAccountName productId productName productNickname channelId channelKey quantity freeQuantity uploadedSalesValue uploadedCurrency matchStatus productMatched accountMatched channelMatched matchedOrderId matchedTargetAssignmentIds matchNotes createdAt")
     .sort({ createdAt: 1, _id: 1 });
+  const existingDuplicateRecords = await SalesRecord.find({
+    ...scopeQuery,
+    status: "duplicate",
+    isActive: false,
+  }).select("_id").lean();
   const groups = new Map();
 
   for (const record of records) {
@@ -107,6 +114,7 @@ const cleanupDuplicateSalesRecords = async (input = {}) => {
   const duplicateGroups = [...groups.values()].filter((group) => group.length > 1);
   const duplicateIds = [];
   const keptIds = [];
+  const existingDuplicateIds = existingDuplicateRecords.map((record) => record._id);
 
   for (const group of duplicateGroups) {
     const sorted = [...group].sort((left, right) => {
@@ -136,40 +144,51 @@ const cleanupDuplicateSalesRecords = async (input = {}) => {
     duplicateIds.push(...duplicates.map((record) => record._id));
   }
 
-  if (duplicateIds.length > 0 && input.apply !== false) {
-    await SalesRecord.updateMany(
-      { _id: { $in: duplicateIds } },
-      [
-        {
-          $set: {
-            status: "duplicate",
-            isActive: false,
-            matchNotes: {
-              $concat: [
-                { $ifNull: ["$matchNotes", ""] },
-                {
-                  $cond: [
-                    { $gt: [{ $strLenCP: { $ifNull: ["$matchNotes", ""] } }, 0] },
-                    "; ",
-                    "",
-                  ],
-                },
-                "Duplicate deactivated by Refine Sales Data",
-              ],
+  const shouldDeleteDuplicates = input.deleteDuplicates !== false;
+  const duplicateRecordIds = shouldDeleteDuplicates
+    ? [...existingDuplicateIds, ...duplicateIds]
+    : duplicateIds;
+
+  if (input.apply !== false) {
+    if (shouldDeleteDuplicates && duplicateRecordIds.length > 0) {
+      await SalesRecord.deleteMany({ _id: { $in: duplicateRecordIds } });
+    } else if (duplicateIds.length > 0) {
+      await SalesRecord.updateMany(
+        { _id: { $in: duplicateIds } },
+        [
+          {
+            $set: {
+              status: "duplicate",
+              isActive: false,
+              matchNotes: {
+                $concat: [
+                  { $ifNull: ["$matchNotes", ""] },
+                  {
+                    $cond: [
+                      { $gt: [{ $strLenCP: { $ifNull: ["$matchNotes", ""] } }, 0] },
+                      "; ",
+                      "",
+                    ],
+                  },
+                  "Duplicate deactivated by Refine Sales Data",
+                ],
+              },
+              updatedAt: "$$NOW",
             },
-            updatedAt: "$$NOW",
           },
-        },
-      ],
-    );
+        ],
+      );
+    }
   }
 
   return {
     checkedRecords: records.length,
     duplicateGroupsFound: duplicateGroups.length,
-    duplicatesDeactivated: duplicateIds.length,
+    duplicatesDeactivated: duplicateRecordIds.length,
+    duplicatesRemoved: shouldDeleteDuplicates ? duplicateRecordIds.length : 0,
+    existingDuplicateRecordsFound: existingDuplicateIds.length,
     keptRecords: keptIds.length,
-    duplicateRecordIds: duplicateIds,
+    duplicateRecordIds,
     keptRecordIds: keptIds,
   };
 };

@@ -2184,6 +2184,8 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           checkedRecords: result.checkedRecords,
           duplicateGroupsFound: result.duplicateGroupsFound,
           duplicatesDeactivated: result.duplicatesDeactivated,
+          duplicatesRemoved: result.duplicatesRemoved,
+          existingDuplicateRecordsFound: result.existingDuplicateRecordsFound,
           keptRecords: result.keptRecords,
         });
       }).catch((error) => {
@@ -2709,6 +2711,8 @@ router.post("/cleanup-duplicates", auth, loadSalesActor, requireManager, async (
         checkedRecords: result.checkedRecords,
         duplicateGroupsFound: result.duplicateGroupsFound,
         duplicatesDeactivated: result.duplicatesDeactivated,
+        duplicatesRemoved: result.duplicatesRemoved,
+        existingDuplicateRecordsFound: result.existingDuplicateRecordsFound,
         keptRecords: result.keptRecords,
         duplicateRecordIds: result.duplicateRecordIds,
         keptRecordIds: result.keptRecordIds,
