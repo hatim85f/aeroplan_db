@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const Account = require("../models/Account");
 const Area = require("../models/Area");
 const SalesRecord = require("../models/SalesRecord");
 const SharedSalesRule = require("../models/SharedSalesRule");
@@ -18,8 +19,15 @@ const parseDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const buildSharedRuleQueryForRecord = (record) => ({
-  accountId: record.accountId,
+const normalizeText = (value) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const buildSharedRuleQueryForRecord = (record, accountId = record.accountId) => ({
+  accountId,
   status: "active",
   isActive: true,
   $and: [
@@ -53,6 +61,23 @@ const buildSharedRuleQueryForRecord = (record) => ({
     },
   ],
 });
+
+const resolveSoldToAccountId = async (record) => {
+  if (!record?.accountName) {
+    return record?.accountId;
+  }
+
+  const normalizedAccountName = normalizeText(record.accountName);
+
+  if (!normalizedAccountName) {
+    return record.accountId;
+  }
+
+  const account = await Account.findOne({ accountName: record.accountName }).select("_id").lean()
+    || await Account.findOne({ accountNameKey: normalizedAccountName }).select("_id").lean();
+
+  return account?._id || record.accountId;
+};
 
 const findUserArea = async (userId) => {
   if (!userId || !isValidObjectId(userId)) {
@@ -139,8 +164,9 @@ const calculateAreaShares = async (record) => {
   }
 
   ensureRawSalesValues(record);
+  const sharedSalesAccountId = await resolveSoldToAccountId(record);
 
-  const rules = await SharedSalesRule.find(buildSharedRuleQueryForRecord(record))
+  const rules = await SharedSalesRule.find(buildSharedRuleQueryForRecord(record, sharedSalesAccountId))
     .populate("areaId", "areaName")
     .lean();
 
@@ -330,8 +356,8 @@ const recalculateSharedSales = async (input = {}) => {
   };
 };
 
-const isRuleApplicableToRecord = (rule, record) => {
-  if (String(rule.accountId) !== String(record.accountId)) {
+const isRuleApplicableToRecord = (rule, record, accountId = record.accountId) => {
+  if (String(rule.accountId) !== String(accountId)) {
     return false;
   }
 
@@ -377,6 +403,26 @@ const getRecordAreaFromMaps = (record, areaMaps) => {
   const userId = String(record.createdBy || record.updatedBy || "");
 
   return areaMaps.managerMap.get(userId) || areaMaps.userMap.get(userId) || null;
+};
+
+const buildAccountNameMap = (accounts = []) => {
+  const accountNameMap = new Map();
+
+  accounts.forEach((account) => {
+    const normalizedName = normalizeText(account.accountName);
+
+    if (normalizedName && !accountNameMap.has(normalizedName)) {
+      accountNameMap.set(normalizedName, account);
+    }
+  });
+
+  return accountNameMap;
+};
+
+const getSharedSalesAccountId = (record, accountNameMap) => {
+  const soldToAccount = accountNameMap.get(normalizeText(record.accountName));
+
+  return soldToAccount?._id || record.accountId;
 };
 
 const buildOptimizedShareEntry = (record, rule) => {
@@ -454,14 +500,16 @@ const recalculateSharedSalesOptimized = async (input = {}) => {
     query.accountId = accountIds.length > 0 ? { $in: accountIds } : null;
   }
 
-  const [records, rules, areas] = await Promise.all([
+  const [records, rules, areas, accounts] = await Promise.all([
     SalesRecord.find(query).lean(),
     SharedSalesRule.find({ status: "active", isActive: true })
       .populate("areaId", "areaName")
       .lean(),
     Area.find({ status: "active", isActive: true }).select("_id areaName managerId userIds").lean(),
+    Account.find({}).select("_id accountName").lean(),
   ]);
   const areaMaps = buildUserAreaMaps(areas);
+  const accountNameMap = buildAccountNameMap(accounts);
   const rulesByAccount = new Map();
 
   rules.forEach((rule) => {
@@ -508,8 +556,9 @@ const recalculateSharedSalesOptimized = async (input = {}) => {
         }
       }
 
-      const matchedRules = (rulesByAccount.get(String(record.accountId)) || [])
-        .filter((rule) => isRuleApplicableToRecord(rule, record));
+      const sharedSalesAccountId = getSharedSalesAccountId(record, accountNameMap);
+      const matchedRules = (rulesByAccount.get(String(sharedSalesAccountId)) || [])
+        .filter((rule) => isRuleApplicableToRecord(rule, record, sharedSalesAccountId));
       const areaShares = matchedRules.map((rule) => buildOptimizedShareEntry(record, rule));
 
       updateValues.areaShares = areaShares;
