@@ -18,68 +18,41 @@ const parseDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const buildDateChannelProductFilter = (record) => [
-  {
-    $or: [
-      { productId: record.productId },
-      { productId: { $exists: false } },
-      { productId: null },
-    ],
-  },
-  {
-    $or: [
-      { channelId: record.channelId },
-      { channelId: { $exists: false } },
-      { channelId: null },
-    ],
-  },
-  {
-    $or: [
-      { startDate: { $exists: false } },
-      { startDate: null },
-      { startDate: { $lte: record.salesDate } },
-    ],
-  },
-  {
-    $or: [
-      { endDate: { $exists: false } },
-      { endDate: null },
-      { endDate: { $gte: record.salesDate } },
-    ],
-  },
-];
-
 const buildSharedRuleQueryForRecord = (record) => ({
   accountId: record.accountId,
   status: "active",
   isActive: true,
-  $and: buildDateChannelProductFilter(record),
+  $and: [
+    {
+      $or: [
+        { productId: record.productId },
+        { productId: { $exists: false } },
+        { productId: null },
+      ],
+    },
+    {
+      $or: [
+        { channelId: record.channelId },
+        { channelId: { $exists: false } },
+        { channelId: null },
+      ],
+    },
+    {
+      $or: [
+        { startDate: { $exists: false } },
+        { startDate: null },
+        { startDate: { $lte: record.salesDate } },
+      ],
+    },
+    {
+      $or: [
+        { endDate: { $exists: false } },
+        { endDate: null },
+        { endDate: { $gte: record.salesDate } },
+      ],
+    },
+  ],
 });
-
-const buildUploaderAreaRuleQuery = (record) => ({
-  areaId: record.uploaderAreaId,
-  status: "active",
-  isActive: true,
-  $and: buildDateChannelProductFilter(record),
-});
-
-const buildShareEntry = (record, areaIdVal, areaNameVal, sharePercentage, ruleId) => {
-  const ratio = sharePercentage / 100;
-  const rawQty = Number(record.rawQuantity ?? record.quantity) || 0;
-  const rawFreeQty = Number(record.rawFreeQuantity ?? record.freeQuantity) || 0;
-
-  return {
-    areaId: areaIdVal,
-    areaName: areaNameVal,
-    sharePercentage,
-    sharedQuantity: rawQty * ratio,
-    sharedFreeQuantity: rawFreeQty * ratio,
-    sharedCalculatedCifUsd: rawQty * (Number(record.unitCifUsd) || 0) * ratio,
-    sharedCalculatedWholesaleAed: rawQty * (Number(record.unitWholesaleAed) || 0) * ratio,
-    sharedCalculatedRetailAed: rawQty * (Number(record.unitRetailAed) || 0) * ratio,
-    ruleId,
-  };
-};
 
 const calculateAreaShares = async (record) => {
   if (!record?.accountId || !record?.productId || !record?.channelId || !record?.salesDate) {
@@ -89,74 +62,37 @@ const calculateAreaShares = async (record) => {
     };
   }
 
-  const [otherAreaRules, uploaderRule] = await Promise.all([
-    SharedSalesRule.find(buildSharedRuleQueryForRecord(record))
-      .populate("areaId", "areaName")
-      .lean(),
-    record.uploaderAreaId
-      ? SharedSalesRule.findOne(buildUploaderAreaRuleQuery(record))
-          .populate("areaId", "areaName")
-          .lean()
-      : Promise.resolve(null),
-  ]);
+  const rules = await SharedSalesRule.find(buildSharedRuleQueryForRecord(record))
+    .populate("areaId", "areaName")
+    .lean();
 
-  if (otherAreaRules.length === 0 && !uploaderRule) {
+  if (rules.length === 0) {
     return {
       areaShares: [],
       sharedSalesApplied: false,
-      uploaderSharePercentage: null,
     };
   }
 
-  const uploaderAreaIdStr = record.uploaderAreaId ? String(record.uploaderAreaId) : null;
+  const areaShares = rules.map((rule) => {
+    const sharePercentage = Number(rule.sharePercentage) || 0;
+    const ratio = sharePercentage / 100;
 
-  const filteredOtherRules = uploaderAreaIdStr
-    ? otherAreaRules.filter((rule) => String(rule.areaId?._id || rule.areaId) !== uploaderAreaIdStr)
-    : otherAreaRules;
-
-  const areaShares = filteredOtherRules.map((rule) => buildShareEntry(
-    record,
-    rule.areaId?._id || rule.areaId,
-    rule.areaId?.areaName,
-    Number(rule.sharePercentage) || 0,
-    rule._id,
-  ));
-
-  let uploaderSharePercentage = null;
-
-  if (record.uploaderAreaId) {
-    if (uploaderRule) {
-      uploaderSharePercentage = Number(uploaderRule.sharePercentage) || 0;
-      if (uploaderSharePercentage > 0) {
-        areaShares.unshift(buildShareEntry(
-          record,
-          uploaderRule.areaId?._id || uploaderRule.areaId,
-          uploaderRule.areaId?.areaName,
-          uploaderSharePercentage,
-          uploaderRule._id,
-        ));
-      }
-    } else if (filteredOtherRules.length > 0) {
-      const totalSharedPercentage = areaShares.reduce((sum, share) => sum + share.sharePercentage, 0);
-      uploaderSharePercentage = Math.max(0, 100 - totalSharedPercentage);
-
-      if (uploaderSharePercentage > 0) {
-        const uploaderArea = await Area.findById(record.uploaderAreaId).select("areaName").lean();
-        areaShares.unshift(buildShareEntry(
-          record,
-          record.uploaderAreaId,
-          uploaderArea?.areaName,
-          uploaderSharePercentage,
-          null,
-        ));
-      }
-    }
-  }
+    return {
+      areaId: rule.areaId?._id || rule.areaId,
+      areaName: rule.areaId?.areaName,
+      sharePercentage,
+      sharedQuantity: (Number(record.quantity) || 0) * ratio,
+      sharedFreeQuantity: (Number(record.freeQuantity) || 0) * ratio,
+      sharedCalculatedCifUsd: (Number(record.calculatedCifUsd) || 0) * ratio,
+      sharedCalculatedWholesaleAed: (Number(record.calculatedWholesaleAed) || 0) * ratio,
+      sharedCalculatedRetailAed: (Number(record.calculatedRetailAed) || 0) * ratio,
+      ruleId: rule._id,
+    };
+  });
 
   return {
     areaShares,
-    sharedSalesApplied: areaShares.length > 0,
-    uploaderSharePercentage,
+    sharedSalesApplied: true,
   };
 };
 
@@ -165,27 +101,6 @@ const applySharedSalesToRecord = async (record) => {
 
   record.areaShares = sharedSales.areaShares;
   record.sharedSalesApplied = sharedSales.sharedSalesApplied;
-
-  const rawQty = Number(record.rawQuantity ?? record.rawRow?.quantity ?? record.quantity) || 0;
-  const rawFreeQty = Number(record.rawFreeQuantity ?? record.rawRow?.freeQuantity ?? record.freeQuantity) || 0;
-
-  if (sharedSales.uploaderSharePercentage !== null) {
-    const ratio = sharedSales.uploaderSharePercentage / 100;
-    record.quantity = rawQty * ratio;
-    record.freeQuantity = rawFreeQty * ratio;
-  } else {
-    record.quantity = rawQty;
-    record.freeQuantity = rawFreeQty;
-  }
-
-  record.totalQuantityWithFoc = record.quantity + record.freeQuantity;
-
-  if (record.unitCifUsd || record.unitWholesaleAed || record.unitRetailAed || record.targetUnitValue) {
-    record.calculatedCifUsd = record.quantity * (Number(record.unitCifUsd) || 0);
-    record.calculatedWholesaleAed = record.quantity * (Number(record.unitWholesaleAed) || 0);
-    record.calculatedRetailAed = record.quantity * (Number(record.unitRetailAed) || 0);
-    record.targetCalculatedValue = record.quantity * (Number(record.targetUnitValue) || 0);
-  }
 
   return record;
 };

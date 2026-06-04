@@ -2,7 +2,6 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
-const Area = require("../../models/Area");
 const Order = require("../../models/Order");
 const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
@@ -2001,12 +2000,11 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
-    const [accountCandidates, productCandidates, activeChannels, detectionRules, uploaderArea] = await Promise.all([
+    const [accountCandidates, productCandidates, activeChannels, detectionRules] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
       loadSalesDetectionRules(req.currentUser),
-      Area.findOne({ $or: [{ userIds: req.currentUser._id }, { managerId: req.currentUser._id }], status: "active", isActive: true }).select("_id").lean(),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -2124,8 +2122,6 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           salesTypeNormalized: getChannelTypeHint(row.channelType)?.channelGroup,
           quantity: row.quantity,
           freeQuantity: row.freeQuantity,
-          rawQuantity: row.quantity,
-          rawFreeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,
           uploadedCurrency: row.uploadedCurrency,
           uploadedUnitValue: channelResult.uploadedUnitValue ?? (row.quantity !== 0 ? Math.abs(row.uploadedSalesValue / row.quantity) : 0),
@@ -2138,7 +2134,6 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           status: isDuplicate ? "duplicate" : "active",
           isActive: !isDuplicate,
           rawRow,
-          uploaderAreaId: uploaderArea?._id,
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });
@@ -2266,7 +2261,6 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     });
     const records = [];
     const failedItems = [];
-    const uploaderArea = await Area.findOne({ $or: [{ userIds: req.currentUser._id }, { managerId: req.currentUser._id }], status: "active", isActive: true }).select("_id").lean();
 
     for (const [index, item] of manualItems.entries()) {
       const rowNumber = index + 1;
@@ -2359,8 +2353,6 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           channelDetectionMethod: "manual",
           quantity,
           freeQuantity,
-          rawQuantity: quantity,
-          rawFreeQuantity: freeQuantity,
           uploadedSalesValue,
           uploadedCurrency,
           uploadedUnitValue,
@@ -2376,7 +2368,6 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
             items: undefined,
             item,
           },
-          uploaderAreaId: uploaderArea?._id,
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });
@@ -3163,32 +3154,6 @@ router.get("/:id", auth, loadSalesActor, async (req, res, next) => {
     }
 
     return res.status(200).json({ success: true, message: "Sales record fetched successfully", data: record });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/:id/apply-area-shares", auth, loadSalesActor, async (req, res, next) => {
-  try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({ success: false, message: "Sales record id must be a valid MongoDB ObjectId" });
-    }
-
-    const record = await getScopedSalesRecord(req.params.id, req.currentUser);
-
-    if (!record) {
-      return res.status(404).json({ success: false, message: "Sales record not found" });
-    }
-
-    await applySharedSalesToRecord(record);
-    record.updatedBy = req.currentUser._id;
-    await record.save();
-
-    return res.status(200).json({
-      success: true,
-      message: "Area shares applied successfully",
-      data: record,
-    });
   } catch (error) {
     return next(error);
   }
