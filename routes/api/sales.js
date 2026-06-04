@@ -2438,6 +2438,55 @@ router.post("/recalculate-shared-sales", auth, loadSalesActor, requireManager, a
   }
 });
 
+router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const hasSalesRecordIds = Array.isArray(req.body.salesRecordIds) && req.body.salesRecordIds.length > 0;
+    const hasYearMonth = req.body.year !== undefined && req.body.month !== undefined;
+
+    if (req.body.batchId && !isValidObjectId(req.body.batchId)) {
+      return res.status(400).json({ success: false, message: "batchId must be a valid MongoDB ObjectId" });
+    }
+
+    if (hasSalesRecordIds && req.body.salesRecordIds.some((id) => !isValidObjectId(id))) {
+      return res.status(400).json({ success: false, message: "salesRecordIds must contain valid MongoDB ObjectIds" });
+    }
+
+    if (hasYearMonth && validateMonthYear(req.body.month, req.body.year)) {
+      return res.status(400).json({ success: false, message: validateMonthYear(req.body.month, req.body.year) });
+    }
+
+    if (!req.body.batchId && !req.body.uploadSessionId && !hasYearMonth && !hasSalesRecordIds) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide batchId, uploadSessionId, year/month, or salesRecordIds",
+      });
+    }
+
+    const result = await recalculateSharedSales({
+      batchId: req.body.batchId,
+      uploadSessionId: req.body.uploadSessionId,
+      year: req.body.year,
+      month: req.body.month,
+      dateFrom: req.body.dateFrom,
+      dateTo: req.body.dateTo,
+      accountId: req.body.accountId,
+      productId: req.body.productId,
+      channelId: req.body.channelId,
+      areaId: req.body.areaId,
+      salesRecordIds: req.body.salesRecordIds,
+      updatedBy: req.currentUser._id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Shared sales applied successfully",
+      data: result,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     let records;

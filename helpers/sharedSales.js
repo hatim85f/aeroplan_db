@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Area = require("../models/Area");
 const SalesRecord = require("../models/SalesRecord");
+const SalesUploadBatch = require("../models/SalesUploadBatch");
 const SharedSalesRule = require("../models/SharedSalesRule");
 
 const { ObjectId } = mongoose.Types;
@@ -106,10 +107,22 @@ const applySharedSalesToRecord = async (record) => {
 };
 
 const buildSalesRecordRecalculationQuery = (input = {}) => {
-  const query = {};
+  const includeInactive = input.includeInactive === true;
+  const query = includeInactive
+    ? {}
+    : {
+      status: "active",
+      isActive: true,
+    };
 
   if (Array.isArray(input.salesRecordIds) && input.salesRecordIds.length > 0) {
     query._id = { $in: input.salesRecordIds.map(toObjectId).filter(Boolean) };
+  }
+
+  const batchId = input.batchId || input.salesUploadBatchId;
+
+  if (batchId && isValidObjectId(batchId)) {
+    query.salesUploadBatchId = toObjectId(batchId);
   }
 
   if (input.year !== undefined) {
@@ -151,6 +164,15 @@ const buildSalesRecordRecalculationQuery = (input = {}) => {
 
 const recalculateSharedSales = async (input = {}) => {
   const query = buildSalesRecordRecalculationQuery(input);
+
+  if (input.uploadSessionId && !query.salesUploadBatchId) {
+    const batches = await SalesUploadBatch.find({
+      uploadSessionId: String(input.uploadSessionId).trim(),
+    }).select("_id").lean();
+    query.salesUploadBatchId = batches.length > 0
+      ? { $in: batches.map((batch) => batch._id) }
+      : null;
+  }
 
   if (input.areaId && isValidObjectId(input.areaId) && !query.accountId) {
     const rules = await SharedSalesRule.find({
