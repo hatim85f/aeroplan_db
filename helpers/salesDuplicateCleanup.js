@@ -23,15 +23,8 @@ const normalizeNumber = (value) => String(Number(value || 0));
 
 const normalizeMoney = (value) => String(Math.round(Number(value || 0) * 100) / 100);
 
-const getAccountIdentity = (record) => normalizeText(record.shipToAccountName)
-  || normalizeId(record.accountId)
-  || normalizeText(record.accountName);
-
 const getProductIdentity = (record) => normalizeId(record.productId)
   || normalizeText(record.productNickname || record.productName);
-
-const getChannelIdentity = (record) => normalizeKey(record.channelKey)
-  || normalizeId(record.channelId);
 
 const buildDuplicateKey = (record) => {
   const baseParts = [
@@ -44,11 +37,8 @@ const buildDuplicateKey = (record) => {
       "invoice",
       ...baseParts,
       normalizeText(record.invoiceNumber),
-      getAccountIdentity(record),
       getProductIdentity(record),
-      getChannelIdentity(record),
       normalizeNumber(record.quantity),
-      normalizeNumber(record.freeQuantity),
     ].join("|");
   }
 
