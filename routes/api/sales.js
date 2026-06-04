@@ -2756,7 +2756,7 @@ router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (
       return res.status(400).json({ success: false, message: validateMonthYear(req.body.month, req.body.year) });
     }
 
-    const result = await recalculateSharedSales({
+    const input = {
       salesRecordIds: Array.isArray(req.body.salesRecordIds) ? req.body.salesRecordIds : undefined,
       year: req.body.year,
       month: req.body.month,
@@ -2769,18 +2769,37 @@ router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (
       activeOnly: true,
       applyRecordShare: true,
       updatedBy: req.currentUser._id,
+    };
+
+    setImmediate(() => {
+      recalculateSharedSales(input).then((result) => {
+        console.log("Shared sales background apply completed:", {
+          matched: result.matchedCount,
+          updated: result.updatedCount,
+          areaIdsAdded: result.areaFilledCount,
+          sharedSalesApplied: result.sharedSalesAppliedCount,
+          recordQuantitiesUpdated: result.recordShareAppliedCount,
+          warnings: result.warnings.length,
+        });
+      }).catch((error) => {
+        console.error("Shared sales background apply failed", error);
+      });
     });
 
-    return res.status(200).json({
+    return res.status(202).json({
       success: true,
-      message: "Shared sales applied successfully",
+      message: "Shared sales apply started",
       data: {
-        matched: result.matchedCount,
-        updated: result.updatedCount,
-        areaIdsAdded: result.areaFilledCount,
-        sharedSalesApplied: result.sharedSalesAppliedCount,
-        recordQuantitiesUpdated: result.recordShareAppliedCount,
-        warnings: result.warnings,
+        started: true,
+        scope: {
+          year: input.year,
+          month: input.month,
+          salesRecordIds: input.salesRecordIds,
+          accountId: input.accountId,
+          productId: input.productId,
+          channelId: input.channelId,
+          areaId: input.areaId,
+        },
       },
     });
   } catch (error) {
