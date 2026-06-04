@@ -2,18 +2,16 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
-const Area = require("../../models/Area");
 const Order = require("../../models/Order");
 const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
 const SalesDetectionRule = require("../../models/SalesDetectionRule");
 const SalesRecord = require("../../models/SalesRecord");
-const SharedSalesRule = require("../../models/SharedSalesRule");
 const SalesSheetMapping = require("../../models/SalesSheetMapping");
 const SalesUploadBatch = require("../../models/SalesUploadBatch");
 const TargetAssignment = require("../../models/TargetAssignment");
 const User = require("../../models/User");
-const { applySharedSalesToRecord, calculateAreaSharesFromRules, recalculateSharedSales } = require("../../helpers/sharedSales");
+const { applySharedSalesToRecord, recalculateSharedSales } = require("../../helpers/sharedSales");
 const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
 
@@ -32,21 +30,6 @@ const PRICE_FIELDS = [
   { field: "wholesaleAed", currency: "AED" },
   { field: "retailAed", currency: "AED" },
 ];
-
-const loadActiveSharedSalesRules = () => SharedSalesRule.find({
-  status: "active",
-  isActive: true,
-})
-  .populate("areaId", "areaName")
-  .lean();
-
-const applyPreloadedSharedSalesToRecord = (record, sharedSalesRules) => {
-  const sharedSales = calculateAreaSharesFromRules(record, sharedSalesRules);
-  record.areaShares = sharedSales.areaShares;
-  record.sharedSalesApplied = sharedSales.sharedSalesApplied;
-  return sharedSales;
-};
-
 const CHANNEL_TYPE_FIELD_KEYS = [
   "channelType",
   "marketType",
@@ -356,26 +339,6 @@ const getAssignedAccountIds = async (scopedUserIds) => {
   }).select("_id").lean();
 
   return accounts.map((account) => account._id);
-};
-
-const getSalesAreaScopeIds = async (user, queryParams = {}) => {
-  if (queryParams.areaId) {
-    return isValidObjectId(queryParams.areaId)
-      ? [new mongoose.Types.ObjectId(queryParams.areaId)]
-      : [null];
-  }
-
-  if (!user || user.role === "admin" || !isManagerRole(user.role)) {
-    return [];
-  }
-
-  const areas = await Area.find({
-    managerId: user._id,
-    status: "active",
-    isActive: true,
-  }).select("_id").lean();
-
-  return areas.map((area) => area._id);
 };
 
 const getAccessibleSalesBatchQuery = async (user) => {
@@ -1349,18 +1312,9 @@ const buildSalesQuery = async (queryParams, user) => {
     query.sharedSalesApplied = normalizeBoolean(queryParams.sharedSalesApplied, false);
   }
 
-  const areaScopeIds = await getSalesAreaScopeIds(user, queryParams);
-
-  if (areaScopeIds.length > 0) {
-    const validAreaScopeIds = areaScopeIds.filter(Boolean);
-
-    query.areaShares = validAreaScopeIds.length > 0
-      ? {
-        $elemMatch: {
-          areaId: { $in: validAreaScopeIds },
-          sharePercentage: { $gt: 0 },
-        },
-      }
+  if (queryParams.areaId) {
+    query["areaShares.areaId"] = isValidObjectId(queryParams.areaId)
+      ? new mongoose.Types.ObjectId(queryParams.areaId)
       : null;
   }
 
@@ -2046,14 +2000,11 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
-    let sharedSalesAppliedRows = 0;
-    let sharedAreaSharesCreated = 0;
-    const [accountCandidates, productCandidates, activeChannels, detectionRules, sharedSalesRules] = await Promise.all([
+    const [accountCandidates, productCandidates, activeChannels, detectionRules] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
       loadSalesDetectionRules(req.currentUser),
-      loadActiveSharedSalesRules(),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -2187,11 +2138,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           updatedBy: req.currentUser._id,
         });
 
-        const sharedSales = applyPreloadedSharedSalesToRecord(record, sharedSalesRules);
-        if (sharedSales.sharedSalesApplied) {
-          sharedSalesAppliedRows += 1;
-          sharedAreaSharesCreated += sharedSales.areaShares.length;
-        }
+        await applySharedSalesToRecord(record);
         await record.save();
 
         createdRecords.push(record);
@@ -2223,11 +2170,6 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         failedRows: failed,
         unmatchedRows: unmatched,
         warnings,
-        sharedSales: {
-          activeRulesChecked: sharedSalesRules.length,
-          appliedRows: sharedSalesAppliedRows,
-          areaSharesCreated: sharedAreaSharesCreated,
-        },
       },
     };
 
@@ -2317,9 +2259,6 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     });
     const records = [];
     const failedItems = [];
-    let sharedSalesAppliedRows = 0;
-    let sharedAreaSharesCreated = 0;
-    const sharedSalesRules = await loadActiveSharedSalesRules();
 
     for (const [index, item] of manualItems.entries()) {
       const rowNumber = index + 1;
@@ -2431,11 +2370,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           updatedBy: req.currentUser._id,
         });
 
-        const sharedSales = applyPreloadedSharedSalesToRecord(record, sharedSalesRules);
-        if (sharedSales.sharedSalesApplied) {
-          sharedSalesAppliedRows += 1;
-          sharedAreaSharesCreated += sharedSales.areaShares.length;
-        }
+        await applySharedSalesToRecord(record);
         await record.save();
         records.push(record);
       } catch (error) {
@@ -2473,9 +2408,6 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           total: manualItems.length,
           createdCount: records.length,
           failedCount: failedItems.length,
-          sharedSalesAppliedRows,
-          sharedAreaSharesCreated,
-          activeSharedRulesChecked: sharedSalesRules.length,
         },
       },
     });
@@ -2494,57 +2426,6 @@ router.post("/recalculate-shared-sales", auth, loadSalesActor, requireManager, a
     return res.status(200).json({
       success: true,
       message: "Shared sales recalculation completed",
-      data: result,
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (req, res, next) => {
-  try {
-    const hasSalesRecordIds = Array.isArray(req.body.salesRecordIds) && req.body.salesRecordIds.length > 0;
-    const hasYearMonth = req.body.year !== undefined && req.body.month !== undefined;
-
-    if (req.body.batchId && !isValidObjectId(req.body.batchId)) {
-      return res.status(400).json({ success: false, message: "batchId must be a valid MongoDB ObjectId" });
-    }
-
-    if (hasSalesRecordIds && req.body.salesRecordIds.some((id) => !isValidObjectId(id))) {
-      return res.status(400).json({ success: false, message: "salesRecordIds must contain valid MongoDB ObjectIds" });
-    }
-
-    if (hasYearMonth && validateMonthYear(req.body.month, req.body.year)) {
-      return res.status(400).json({ success: false, message: validateMonthYear(req.body.month, req.body.year) });
-    }
-
-    if (!req.body.batchId && !req.body.uploadSessionId && !hasYearMonth && !hasSalesRecordIds) {
-      return res.status(400).json({
-        success: false,
-        message: "Provide batchId, uploadSessionId, year/month, or salesRecordIds",
-      });
-    }
-
-    const recalculationInput = {
-      batchId: req.body.batchId,
-      uploadSessionId: req.body.uploadSessionId,
-      year: req.body.year,
-      month: req.body.month,
-      dateFrom: req.body.dateFrom,
-      dateTo: req.body.dateTo,
-      accountId: req.body.accountId,
-      productId: req.body.productId,
-      channelId: req.body.channelId,
-      areaId: req.body.areaId,
-      salesRecordIds: req.body.salesRecordIds,
-      updatedBy: req.currentUser._id,
-    };
-
-    const result = await recalculateSharedSales(recalculationInput);
-
-    return res.status(200).json({
-      success: true,
-      message: "Shared sales applied successfully",
       data: result,
     });
   } catch (error) {
@@ -2843,78 +2724,35 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
     const baseQuery = await buildSalesQuery(req.query, req.currentUser);
     baseQuery.status = baseQuery.status || "active";
     baseQuery.isActive = true;
-    const areaScopeIds = await getSalesAreaScopeIds(req.currentUser, req.query);
-    const validAreaScopeIds = areaScopeIds.filter(Boolean);
-    const hasAreaScope = validAreaScopeIds.length > 0;
-    const areaShareMatch = {
-      "areaShares.areaId": { $in: validAreaScopeIds },
-      "areaShares.sharePercentage": { $gt: 0 },
-    };
 
-    const summaryPipeline = hasAreaScope
-      ? [
-        { $match: baseQuery },
-        { $unwind: "$areaShares" },
-        { $match: areaShareMatch },
-        {
-          $group: {
-            _id: null,
-            totalQuantity: { $sum: "$areaShares.sharedQuantity" },
-            totalFreeQuantity: { $sum: "$areaShares.sharedFreeQuantity" },
-            totalQuantityWithFoc: { $sum: { $add: ["$areaShares.sharedQuantity", "$areaShares.sharedFreeQuantity"] } },
-            totalUploadedSalesValue: {
-              $sum: {
-                $multiply: [
-                  { $ifNull: ["$uploadedSalesValue", 0] },
-                  { $divide: ["$areaShares.sharePercentage", 100] },
-                ],
-              },
-            },
-            totalCalculatedCifUsd: { $sum: "$areaShares.sharedCalculatedCifUsd" },
-            totalCalculatedWholesaleAed: { $sum: "$areaShares.sharedCalculatedWholesaleAed" },
-            totalCalculatedRetailAed: { $sum: "$areaShares.sharedCalculatedRetailAed" },
-            totalTargetCalculatedValue: {
-              $sum: {
-                $multiply: [
-                  { $ifNull: ["$targetCalculatedValue", 0] },
-                  { $divide: ["$areaShares.sharePercentage", 100] },
-                ],
-              },
-            },
-            recordsCount: { $sum: 1 },
-            matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
-            unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
-            needsReviewCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "needs_review"] }, 1, 0] } },
-          },
+    const [summary] = await SalesRecord.aggregate([
+      { $match: baseQuery },
+      {
+        $group: {
+          _id: null,
+          totalQuantity: { $sum: "$quantity" },
+          totalFreeQuantity: { $sum: "$freeQuantity" },
+          totalQuantityWithFoc: { $sum: "$totalQuantityWithFoc" },
+          totalUploadedSalesValue: { $sum: "$uploadedSalesValue" },
+          totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
+          totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
+          totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+          totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
+          recordsCount: { $sum: 1 },
+          matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
+          unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
+          needsReviewCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "needs_review"] }, 1, 0] } },
         },
-      ]
-      : [
-        { $match: baseQuery },
-        {
-          $group: {
-            _id: null,
-            totalQuantity: { $sum: "$quantity" },
-            totalFreeQuantity: { $sum: "$freeQuantity" },
-            totalQuantityWithFoc: { $sum: "$totalQuantityWithFoc" },
-            totalUploadedSalesValue: { $sum: "$uploadedSalesValue" },
-            totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
-            totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
-            totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
-            totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
-            recordsCount: { $sum: 1 },
-            matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
-            unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
-            needsReviewCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "needs_review"] }, 1, 0] } },
-          },
-        },
-      ];
-
-    const [summary] = await SalesRecord.aggregate(summaryPipeline);
-    const [areaSummary] = hasAreaScope
+      },
+    ]);
+    const areaObjectId = req.query.areaId && isValidObjectId(req.query.areaId)
+      ? new mongoose.Types.ObjectId(req.query.areaId)
+      : null;
+    const [areaSummary] = areaObjectId
       ? await SalesRecord.aggregate([
         { $match: baseQuery },
         { $unwind: "$areaShares" },
-        { $match: areaShareMatch },
+        { $match: { "areaShares.areaId": areaObjectId } },
         {
           $group: {
             _id: "$areaShares.areaId",
@@ -2929,41 +2767,22 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       ])
       : [null];
 
-    const groupBy = async (idField, nameField) => SalesRecord.aggregate(hasAreaScope
-      ? [
-        { $match: baseQuery },
-        { $unwind: "$areaShares" },
-        { $match: areaShareMatch },
-        {
-          $group: {
-            _id: `$${idField}`,
-            name: { $first: `$${nameField}` },
-            totalQuantity: { $sum: "$areaShares.sharedQuantity" },
-            totalCalculatedCifUsd: { $sum: "$areaShares.sharedCalculatedCifUsd" },
-            totalCalculatedWholesaleAed: { $sum: "$areaShares.sharedCalculatedWholesaleAed" },
-            totalCalculatedRetailAed: { $sum: "$areaShares.sharedCalculatedRetailAed" },
-            recordsCount: { $sum: 1 },
-          },
+    const groupBy = async (idField, nameField) => SalesRecord.aggregate([
+      { $match: baseQuery },
+      {
+        $group: {
+          _id: `$${idField}`,
+          name: { $first: `$${nameField}` },
+          totalQuantity: { $sum: "$quantity" },
+          totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
+          totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
+          totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+          recordsCount: { $sum: 1 },
         },
-        { $sort: { totalQuantity: -1 } },
-        { $limit: 50 },
-      ]
-      : [
-        { $match: baseQuery },
-        {
-          $group: {
-            _id: `$${idField}`,
-            name: { $first: `$${nameField}` },
-            totalQuantity: { $sum: "$quantity" },
-            totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
-            totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
-            totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
-            recordsCount: { $sum: 1 },
-          },
-        },
-        { $sort: { totalQuantity: -1 } },
-        { $limit: 50 },
-      ]);
+      },
+      { $sort: { totalQuantity: -1 } },
+      { $limit: 50 },
+    ]);
 
     const [salesByProduct, salesByAccount, salesByChannel] = await Promise.all([
       groupBy("productId", "productName"),
@@ -3294,19 +3113,15 @@ router.get("/", auth, loadSalesActor, async (req, res, next) => {
       query.isActive = true;
     }
 
-    const areaScopeIds = await getSalesAreaScopeIds(req.currentUser, req.query);
-    const validAreaScopeIdSet = new Set(areaScopeIds.filter(Boolean).map((areaId) => String(areaId)));
-
     const [records, total] = await Promise.all([
       SalesRecord.find(query).sort({ salesDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       SalesRecord.countDocuments(query),
     ]);
-    const data = validAreaScopeIdSet.size > 0
+    const data = req.query.areaId && isValidObjectId(req.query.areaId)
       ? records.map((record) => ({
         ...record,
         matchingAreaShare: (record.areaShares || []).find((areaShare) => (
-          validAreaScopeIdSet.has(String(areaShare.areaId))
-          && Number(areaShare.sharePercentage || 0) > 0
+          String(areaShare.areaId) === String(req.query.areaId)
         )) || null,
       }))
       : records;
