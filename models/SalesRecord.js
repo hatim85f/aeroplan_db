@@ -330,6 +330,12 @@ const salesRecordSchema = new Schema(
       ref: "Area",
       index: true,
     },
+    rawQuantity: {
+      type: Number,
+    },
+    rawFreeQuantity: {
+      type: Number,
+    },
     areaShares: {
       type: [areaShareSchema],
       default: [],

@@ -65,15 +65,18 @@ const buildUploaderAreaRuleQuery = (record) => ({
 
 const buildShareEntry = (record, areaIdVal, areaNameVal, sharePercentage, ruleId) => {
   const ratio = sharePercentage / 100;
+  const rawQty = Number(record.rawQuantity ?? record.quantity) || 0;
+  const rawFreeQty = Number(record.rawFreeQuantity ?? record.freeQuantity) || 0;
+
   return {
     areaId: areaIdVal,
     areaName: areaNameVal,
     sharePercentage,
-    sharedQuantity: (Number(record.quantity) || 0) * ratio,
-    sharedFreeQuantity: (Number(record.freeQuantity) || 0) * ratio,
-    sharedCalculatedCifUsd: (Number(record.calculatedCifUsd) || 0) * ratio,
-    sharedCalculatedWholesaleAed: (Number(record.calculatedWholesaleAed) || 0) * ratio,
-    sharedCalculatedRetailAed: (Number(record.calculatedRetailAed) || 0) * ratio,
+    sharedQuantity: rawQty * ratio,
+    sharedFreeQuantity: rawFreeQty * ratio,
+    sharedCalculatedCifUsd: rawQty * (Number(record.unitCifUsd) || 0) * ratio,
+    sharedCalculatedWholesaleAed: rawQty * (Number(record.unitWholesaleAed) || 0) * ratio,
+    sharedCalculatedRetailAed: rawQty * (Number(record.unitRetailAed) || 0) * ratio,
     ruleId,
   };
 };
@@ -101,12 +104,12 @@ const calculateAreaShares = async (record) => {
     return {
       areaShares: [],
       sharedSalesApplied: false,
+      uploaderSharePercentage: null,
     };
   }
 
   const uploaderAreaIdStr = record.uploaderAreaId ? String(record.uploaderAreaId) : null;
 
-  // Exclude uploader's area from the account-based rules to avoid double-counting
   const filteredOtherRules = uploaderAreaIdStr
     ? otherAreaRules.filter((rule) => String(rule.areaId?._id || rule.areaId) !== uploaderAreaIdStr)
     : otherAreaRules;
@@ -119,30 +122,31 @@ const calculateAreaShares = async (record) => {
     rule._id,
   ));
 
+  let uploaderSharePercentage = null;
+
   if (record.uploaderAreaId) {
     if (uploaderRule) {
-      const sharePercentage = Number(uploaderRule.sharePercentage) || 0;
-      if (sharePercentage > 0) {
+      uploaderSharePercentage = Number(uploaderRule.sharePercentage) || 0;
+      if (uploaderSharePercentage > 0) {
         areaShares.unshift(buildShareEntry(
           record,
           uploaderRule.areaId?._id || uploaderRule.areaId,
           uploaderRule.areaId?.areaName,
-          sharePercentage,
+          uploaderSharePercentage,
           uploaderRule._id,
         ));
       }
-    } else {
-      // No explicit rule for uploader's area — give them the remainder
+    } else if (filteredOtherRules.length > 0) {
       const totalSharedPercentage = areaShares.reduce((sum, share) => sum + share.sharePercentage, 0);
-      const remainderPercentage = Math.max(0, 100 - totalSharedPercentage);
+      uploaderSharePercentage = Math.max(0, 100 - totalSharedPercentage);
 
-      if (remainderPercentage > 0) {
+      if (uploaderSharePercentage > 0) {
         const uploaderArea = await Area.findById(record.uploaderAreaId).select("areaName").lean();
         areaShares.unshift(buildShareEntry(
           record,
           record.uploaderAreaId,
           uploaderArea?.areaName,
-          remainderPercentage,
+          uploaderSharePercentage,
           null,
         ));
       }
@@ -152,6 +156,7 @@ const calculateAreaShares = async (record) => {
   return {
     areaShares,
     sharedSalesApplied: areaShares.length > 0,
+    uploaderSharePercentage,
   };
 };
 
@@ -160,6 +165,27 @@ const applySharedSalesToRecord = async (record) => {
 
   record.areaShares = sharedSales.areaShares;
   record.sharedSalesApplied = sharedSales.sharedSalesApplied;
+
+  const rawQty = Number(record.rawQuantity ?? record.rawRow?.quantity ?? record.quantity) || 0;
+  const rawFreeQty = Number(record.rawFreeQuantity ?? record.rawRow?.freeQuantity ?? record.freeQuantity) || 0;
+
+  if (sharedSales.uploaderSharePercentage !== null) {
+    const ratio = sharedSales.uploaderSharePercentage / 100;
+    record.quantity = rawQty * ratio;
+    record.freeQuantity = rawFreeQty * ratio;
+  } else {
+    record.quantity = rawQty;
+    record.freeQuantity = rawFreeQty;
+  }
+
+  record.totalQuantityWithFoc = record.quantity + record.freeQuantity;
+
+  if (record.unitCifUsd || record.unitWholesaleAed || record.unitRetailAed || record.targetUnitValue) {
+    record.calculatedCifUsd = record.quantity * (Number(record.unitCifUsd) || 0);
+    record.calculatedWholesaleAed = record.quantity * (Number(record.unitWholesaleAed) || 0);
+    record.calculatedRetailAed = record.quantity * (Number(record.unitRetailAed) || 0);
+    record.targetCalculatedValue = record.quantity * (Number(record.targetUnitValue) || 0);
+  }
 
   return record;
 };
