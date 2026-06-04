@@ -2006,7 +2006,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
       loadSalesDetectionRules(req.currentUser),
-      Area.findOne({ userIds: req.currentUser._id, status: "active", isActive: true }).select("_id").lean(),
+      Area.findOne({ $or: [{ userIds: req.currentUser._id }, { managerId: req.currentUser._id }], status: "active", isActive: true }).select("_id").lean(),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -2264,7 +2264,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     });
     const records = [];
     const failedItems = [];
-    const uploaderArea = await Area.findOne({ userIds: req.currentUser._id, status: "active", isActive: true }).select("_id").lean();
+    const uploaderArea = await Area.findOne({ $or: [{ userIds: req.currentUser._id }, { managerId: req.currentUser._id }], status: "active", isActive: true }).select("_id").lean();
 
     for (const [index, item] of manualItems.entries()) {
       const rowNumber = index + 1;
