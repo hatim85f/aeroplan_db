@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
+const Area = require("../../models/Area");
 const Order = require("../../models/Order");
 const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
@@ -2000,11 +2001,12 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
-    const [accountCandidates, productCandidates, activeChannels, detectionRules] = await Promise.all([
+    const [accountCandidates, productCandidates, activeChannels, detectionRules, uploaderArea] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
       loadSalesDetectionRules(req.currentUser),
+      Area.findOne({ userIds: req.currentUser._id, status: "active", isActive: true }).select("_id").lean(),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -2134,6 +2136,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           status: isDuplicate ? "duplicate" : "active",
           isActive: !isDuplicate,
           rawRow,
+          uploaderAreaId: uploaderArea?._id,
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });
@@ -2261,6 +2264,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     });
     const records = [];
     const failedItems = [];
+    const uploaderArea = await Area.findOne({ userIds: req.currentUser._id, status: "active", isActive: true }).select("_id").lean();
 
     for (const [index, item] of manualItems.entries()) {
       const rowNumber = index + 1;
@@ -2368,6 +2372,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
             items: undefined,
             item,
           },
+          uploaderAreaId: uploaderArea?._id,
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });

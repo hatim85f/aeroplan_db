@@ -90,6 +90,35 @@ const calculateAreaShares = async (record) => {
     };
   });
 
+  const uploaderAreaId = record.uploaderAreaId;
+
+  if (uploaderAreaId) {
+    const uploaderAreaIdStr = String(uploaderAreaId);
+    const alreadyCovered = areaShares.some((share) => String(share.areaId) === uploaderAreaIdStr);
+
+    if (!alreadyCovered) {
+      const totalSharedPercentage = areaShares.reduce((sum, share) => sum + share.sharePercentage, 0);
+      const remainderPercentage = Math.max(0, 100 - totalSharedPercentage);
+
+      if (remainderPercentage > 0) {
+        const uploaderArea = await Area.findById(uploaderAreaId).select("areaName").lean();
+        const remainderRatio = remainderPercentage / 100;
+
+        areaShares.unshift({
+          areaId: uploaderAreaId,
+          areaName: uploaderArea?.areaName,
+          sharePercentage: remainderPercentage,
+          sharedQuantity: (Number(record.quantity) || 0) * remainderRatio,
+          sharedFreeQuantity: (Number(record.freeQuantity) || 0) * remainderRatio,
+          sharedCalculatedCifUsd: (Number(record.calculatedCifUsd) || 0) * remainderRatio,
+          sharedCalculatedWholesaleAed: (Number(record.calculatedWholesaleAed) || 0) * remainderRatio,
+          sharedCalculatedRetailAed: (Number(record.calculatedRetailAed) || 0) * remainderRatio,
+          ruleId: null,
+        });
+      }
+    }
+  }
+
   return {
     areaShares,
     sharedSalesApplied: true,
