@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
+const Area = require("../../models/Area");
 const Order = require("../../models/Order");
 const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
@@ -2000,11 +2001,19 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
-    const [accountCandidates, productCandidates, activeChannels, detectionRules] = await Promise.all([
+    const [accountCandidates, productCandidates, activeChannels, detectionRules, uploaderArea] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
       loadSalesDetectionRules(req.currentUser),
+      Area.findOne({
+        $or: [
+          { managerId: req.currentUser._id },
+          { userIds: req.currentUser._id },
+        ],
+        status: "active",
+        isActive: true,
+      }).select("_id areaName").lean(),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -2081,7 +2090,10 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           channelKey: channelResult.channel?.channelKey || normalizeKey(row.channelKey),
           quantity: row.quantity,
           freeQuantity: row.freeQuantity,
+          rawQuantity: row.quantity,
+          rawFreeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,
+          rawUploadedSalesValue: row.uploadedSalesValue,
           uploadedCurrency: row.uploadedCurrency,
         });
         const isDuplicate = seenKeys.has(duplicateKey);
@@ -2134,6 +2146,8 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           status: isDuplicate ? "duplicate" : "active",
           isActive: !isDuplicate,
           rawRow,
+          areaId: uploaderArea?._id,
+          areaName: uploaderArea?.areaName,
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });
@@ -2261,6 +2275,14 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     });
     const records = [];
     const failedItems = [];
+    const uploaderArea = await Area.findOne({
+      $or: [
+        { managerId: req.currentUser._id },
+        { userIds: req.currentUser._id },
+      ],
+      status: "active",
+      isActive: true,
+    }).select("_id areaName").lean();
 
     for (const [index, item] of manualItems.entries()) {
       const rowNumber = index + 1;
@@ -2353,7 +2375,10 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           channelDetectionMethod: "manual",
           quantity,
           freeQuantity,
+          rawQuantity: quantity,
+          rawFreeQuantity: freeQuantity,
           uploadedSalesValue,
+          rawUploadedSalesValue: uploadedSalesValue,
           uploadedCurrency,
           uploadedUnitValue,
           detectedPriceBasis: detectedPriceField?.field,
@@ -2368,6 +2393,8 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
             items: undefined,
             item,
           },
+          areaId: uploaderArea?._id,
+          areaName: uploaderArea?.areaName,
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });
@@ -2716,6 +2743,44 @@ router.post("/cleanup-duplicates", auth, loadSalesActor, requireManager, async (
         keptRecords: result.keptRecords,
         duplicateRecordIds: result.duplicateRecordIds,
         keptRecordIds: result.keptRecordIds,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    if ((req.body.month || req.body.year) && validateMonthYear(req.body.month, req.body.year)) {
+      return res.status(400).json({ success: false, message: validateMonthYear(req.body.month, req.body.year) });
+    }
+
+    const result = await recalculateSharedSales({
+      salesRecordIds: Array.isArray(req.body.salesRecordIds) ? req.body.salesRecordIds : undefined,
+      year: req.body.year,
+      month: req.body.month,
+      dateFrom: req.body.dateFrom,
+      dateTo: req.body.dateTo,
+      accountId: req.body.accountId,
+      productId: req.body.productId,
+      channelId: req.body.channelId,
+      areaId: req.body.areaId,
+      activeOnly: true,
+      applyRecordShare: true,
+      updatedBy: req.currentUser._id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Shared sales applied successfully",
+      data: {
+        matched: result.matchedCount,
+        updated: result.updatedCount,
+        areaIdsAdded: result.areaFilledCount,
+        sharedSalesApplied: result.sharedSalesAppliedCount,
+        recordQuantitiesUpdated: result.recordShareAppliedCount,
+        warnings: result.warnings,
       },
     });
   } catch (error) {

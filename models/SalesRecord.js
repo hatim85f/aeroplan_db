@@ -325,6 +325,25 @@ const salesRecordSchema = new Schema(
     rawRow: {
       type: Schema.Types.Mixed,
     },
+    areaId: {
+      type: Schema.Types.ObjectId,
+      ref: "Area",
+      index: true,
+    },
+    areaName: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    rawQuantity: {
+      type: Number,
+    },
+    rawFreeQuantity: {
+      type: Number,
+    },
+    rawUploadedSalesValue: {
+      type: Number,
+    },
     areaShares: {
       type: [areaShareSchema],
       default: [],
