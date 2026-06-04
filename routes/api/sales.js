@@ -1313,8 +1313,13 @@ const buildSalesQuery = async (queryParams, user) => {
   }
 
   if (queryParams.areaId) {
-    query["areaShares.areaId"] = isValidObjectId(queryParams.areaId)
-      ? new mongoose.Types.ObjectId(queryParams.areaId)
+    query.areaShares = isValidObjectId(queryParams.areaId)
+      ? {
+        $elemMatch: {
+          areaId: new mongoose.Types.ObjectId(queryParams.areaId),
+          sharePercentage: { $gt: 0 },
+        },
+      }
       : null;
   }
 
@@ -2724,35 +2729,74 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
     const baseQuery = await buildSalesQuery(req.query, req.currentUser);
     baseQuery.status = baseQuery.status || "active";
     baseQuery.isActive = true;
-
-    const [summary] = await SalesRecord.aggregate([
-      { $match: baseQuery },
-      {
-        $group: {
-          _id: null,
-          totalQuantity: { $sum: "$quantity" },
-          totalFreeQuantity: { $sum: "$freeQuantity" },
-          totalQuantityWithFoc: { $sum: "$totalQuantityWithFoc" },
-          totalUploadedSalesValue: { $sum: "$uploadedSalesValue" },
-          totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
-          totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
-          totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
-          totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
-          recordsCount: { $sum: 1 },
-          matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
-          unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
-          needsReviewCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "needs_review"] }, 1, 0] } },
-        },
-      },
-    ]);
     const areaObjectId = req.query.areaId && isValidObjectId(req.query.areaId)
       ? new mongoose.Types.ObjectId(req.query.areaId)
       : null;
+
+    const summaryPipeline = areaObjectId
+      ? [
+        { $match: baseQuery },
+        { $unwind: "$areaShares" },
+        { $match: { "areaShares.areaId": areaObjectId, "areaShares.sharePercentage": { $gt: 0 } } },
+        {
+          $group: {
+            _id: null,
+            totalQuantity: { $sum: "$areaShares.sharedQuantity" },
+            totalFreeQuantity: { $sum: "$areaShares.sharedFreeQuantity" },
+            totalQuantityWithFoc: { $sum: { $add: ["$areaShares.sharedQuantity", "$areaShares.sharedFreeQuantity"] } },
+            totalUploadedSalesValue: {
+              $sum: {
+                $multiply: [
+                  { $ifNull: ["$uploadedSalesValue", 0] },
+                  { $divide: ["$areaShares.sharePercentage", 100] },
+                ],
+              },
+            },
+            totalCalculatedCifUsd: { $sum: "$areaShares.sharedCalculatedCifUsd" },
+            totalCalculatedWholesaleAed: { $sum: "$areaShares.sharedCalculatedWholesaleAed" },
+            totalCalculatedRetailAed: { $sum: "$areaShares.sharedCalculatedRetailAed" },
+            totalTargetCalculatedValue: {
+              $sum: {
+                $multiply: [
+                  { $ifNull: ["$targetCalculatedValue", 0] },
+                  { $divide: ["$areaShares.sharePercentage", 100] },
+                ],
+              },
+            },
+            recordsCount: { $sum: 1 },
+            matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
+            unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
+            needsReviewCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "needs_review"] }, 1, 0] } },
+          },
+        },
+      ]
+      : [
+        { $match: baseQuery },
+        {
+          $group: {
+            _id: null,
+            totalQuantity: { $sum: "$quantity" },
+            totalFreeQuantity: { $sum: "$freeQuantity" },
+            totalQuantityWithFoc: { $sum: "$totalQuantityWithFoc" },
+            totalUploadedSalesValue: { $sum: "$uploadedSalesValue" },
+            totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
+            totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
+            totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+            totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
+            recordsCount: { $sum: 1 },
+            matchedOrdersCount: { $sum: { $cond: [{ $ifNull: ["$matchedOrderId", false] }, 1, 0] } },
+            unmatchedSalesRecordsCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "unmatched"] }, 1, 0] } },
+            needsReviewCount: { $sum: { $cond: [{ $eq: ["$matchStatus", "needs_review"] }, 1, 0] } },
+          },
+        },
+      ];
+
+    const [summary] = await SalesRecord.aggregate(summaryPipeline);
     const [areaSummary] = areaObjectId
       ? await SalesRecord.aggregate([
         { $match: baseQuery },
         { $unwind: "$areaShares" },
-        { $match: { "areaShares.areaId": areaObjectId } },
+        { $match: { "areaShares.areaId": areaObjectId, "areaShares.sharePercentage": { $gt: 0 } } },
         {
           $group: {
             _id: "$areaShares.areaId",
@@ -2767,22 +2811,41 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       ])
       : [null];
 
-    const groupBy = async (idField, nameField) => SalesRecord.aggregate([
-      { $match: baseQuery },
-      {
-        $group: {
-          _id: `$${idField}`,
-          name: { $first: `$${nameField}` },
-          totalQuantity: { $sum: "$quantity" },
-          totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
-          totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
-          totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
-          recordsCount: { $sum: 1 },
+    const groupBy = async (idField, nameField) => SalesRecord.aggregate(areaObjectId
+      ? [
+        { $match: baseQuery },
+        { $unwind: "$areaShares" },
+        { $match: { "areaShares.areaId": areaObjectId, "areaShares.sharePercentage": { $gt: 0 } } },
+        {
+          $group: {
+            _id: `$${idField}`,
+            name: { $first: `$${nameField}` },
+            totalQuantity: { $sum: "$areaShares.sharedQuantity" },
+            totalCalculatedCifUsd: { $sum: "$areaShares.sharedCalculatedCifUsd" },
+            totalCalculatedWholesaleAed: { $sum: "$areaShares.sharedCalculatedWholesaleAed" },
+            totalCalculatedRetailAed: { $sum: "$areaShares.sharedCalculatedRetailAed" },
+            recordsCount: { $sum: 1 },
+          },
         },
-      },
-      { $sort: { totalQuantity: -1 } },
-      { $limit: 50 },
-    ]);
+        { $sort: { totalQuantity: -1 } },
+        { $limit: 50 },
+      ]
+      : [
+        { $match: baseQuery },
+        {
+          $group: {
+            _id: `$${idField}`,
+            name: { $first: `$${nameField}` },
+            totalQuantity: { $sum: "$quantity" },
+            totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
+            totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
+            totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+            recordsCount: { $sum: 1 },
+          },
+        },
+        { $sort: { totalQuantity: -1 } },
+        { $limit: 50 },
+      ]);
 
     const [salesByProduct, salesByAccount, salesByChannel] = await Promise.all([
       groupBy("productId", "productName"),
@@ -3122,6 +3185,7 @@ router.get("/", auth, loadSalesActor, async (req, res, next) => {
         ...record,
         matchingAreaShare: (record.areaShares || []).find((areaShare) => (
           String(areaShare.areaId) === String(req.query.areaId)
+          && Number(areaShare.sharePercentage || 0) > 0
         )) || null,
       }))
       : records;
