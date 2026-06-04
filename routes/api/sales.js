@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
+const Area = require("../../models/Area");
 const Order = require("../../models/Order");
 const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
@@ -339,6 +340,26 @@ const getAssignedAccountIds = async (scopedUserIds) => {
   }).select("_id").lean();
 
   return accounts.map((account) => account._id);
+};
+
+const getSalesAreaScopeIds = async (user, queryParams = {}) => {
+  if (queryParams.areaId) {
+    return isValidObjectId(queryParams.areaId)
+      ? [new mongoose.Types.ObjectId(queryParams.areaId)]
+      : [null];
+  }
+
+  if (!user || user.role === "admin" || !isManagerRole(user.role)) {
+    return [];
+  }
+
+  const areas = await Area.find({
+    managerId: user._id,
+    status: "active",
+    isActive: true,
+  }).select("_id").lean();
+
+  return areas.map((area) => area._id);
 };
 
 const getAccessibleSalesBatchQuery = async (user) => {
@@ -1312,11 +1333,15 @@ const buildSalesQuery = async (queryParams, user) => {
     query.sharedSalesApplied = normalizeBoolean(queryParams.sharedSalesApplied, false);
   }
 
-  if (queryParams.areaId) {
-    query.areaShares = isValidObjectId(queryParams.areaId)
+  const areaScopeIds = await getSalesAreaScopeIds(user, queryParams);
+
+  if (areaScopeIds.length > 0) {
+    const validAreaScopeIds = areaScopeIds.filter(Boolean);
+
+    query.areaShares = validAreaScopeIds.length > 0
       ? {
         $elemMatch: {
-          areaId: new mongoose.Types.ObjectId(queryParams.areaId),
+          areaId: { $in: validAreaScopeIds },
           sharePercentage: { $gt: 0 },
         },
       }
@@ -2780,15 +2805,19 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
     const baseQuery = await buildSalesQuery(req.query, req.currentUser);
     baseQuery.status = baseQuery.status || "active";
     baseQuery.isActive = true;
-    const areaObjectId = req.query.areaId && isValidObjectId(req.query.areaId)
-      ? new mongoose.Types.ObjectId(req.query.areaId)
-      : null;
+    const areaScopeIds = await getSalesAreaScopeIds(req.currentUser, req.query);
+    const validAreaScopeIds = areaScopeIds.filter(Boolean);
+    const hasAreaScope = validAreaScopeIds.length > 0;
+    const areaShareMatch = {
+      "areaShares.areaId": { $in: validAreaScopeIds },
+      "areaShares.sharePercentage": { $gt: 0 },
+    };
 
-    const summaryPipeline = areaObjectId
+    const summaryPipeline = hasAreaScope
       ? [
         { $match: baseQuery },
         { $unwind: "$areaShares" },
-        { $match: { "areaShares.areaId": areaObjectId, "areaShares.sharePercentage": { $gt: 0 } } },
+        { $match: areaShareMatch },
         {
           $group: {
             _id: null,
@@ -2843,11 +2872,11 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       ];
 
     const [summary] = await SalesRecord.aggregate(summaryPipeline);
-    const [areaSummary] = areaObjectId
+    const [areaSummary] = hasAreaScope
       ? await SalesRecord.aggregate([
         { $match: baseQuery },
         { $unwind: "$areaShares" },
-        { $match: { "areaShares.areaId": areaObjectId, "areaShares.sharePercentage": { $gt: 0 } } },
+        { $match: areaShareMatch },
         {
           $group: {
             _id: "$areaShares.areaId",
@@ -2862,11 +2891,11 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       ])
       : [null];
 
-    const groupBy = async (idField, nameField) => SalesRecord.aggregate(areaObjectId
+    const groupBy = async (idField, nameField) => SalesRecord.aggregate(hasAreaScope
       ? [
         { $match: baseQuery },
         { $unwind: "$areaShares" },
-        { $match: { "areaShares.areaId": areaObjectId, "areaShares.sharePercentage": { $gt: 0 } } },
+        { $match: areaShareMatch },
         {
           $group: {
             _id: `$${idField}`,
@@ -3227,15 +3256,18 @@ router.get("/", auth, loadSalesActor, async (req, res, next) => {
       query.isActive = true;
     }
 
+    const areaScopeIds = await getSalesAreaScopeIds(req.currentUser, req.query);
+    const validAreaScopeIdSet = new Set(areaScopeIds.filter(Boolean).map((areaId) => String(areaId)));
+
     const [records, total] = await Promise.all([
       SalesRecord.find(query).sort({ salesDate: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       SalesRecord.countDocuments(query),
     ]);
-    const data = req.query.areaId && isValidObjectId(req.query.areaId)
+    const data = validAreaScopeIdSet.size > 0
       ? records.map((record) => ({
         ...record,
         matchingAreaShare: (record.areaShares || []).find((areaShare) => (
-          String(areaShare.areaId) === String(req.query.areaId)
+          validAreaScopeIdSet.has(String(areaShare.areaId))
           && Number(areaShare.sharePercentage || 0) > 0
         )) || null,
       }))
