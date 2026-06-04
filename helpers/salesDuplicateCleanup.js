@@ -11,36 +11,62 @@ const normalizeText = (value) => String(value || "")
 
 const normalizeId = (value) => (value ? String(value) : "");
 
-const buildDuplicateKey = (record) => [
-  normalizeText(record.invoiceNumber),
-  record.salesDate ? new Date(record.salesDate).toISOString().slice(0, 10) : "",
-  Number(record.month || 0),
-  Number(record.year || 0),
-  normalizeId(record.accountId),
-  normalizeText(record.accountName),
-  normalizeText(record.shipToAccountName),
-  normalizeId(record.productId),
-  normalizeText(record.productNickname || record.productName),
-  normalizeId(record.channelId),
-  Number(record.quantity || 0),
-  Number(record.freeQuantity || 0),
-  Number(record.uploadedSalesValue || 0),
-  String(record.uploadedCurrency || "").trim().toUpperCase(),
-].join("|");
+const normalizeKey = (value) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, "_")
+  .replace(/^_+|_+$/g, "");
 
-const getRecordScore = (record) => {
-  let score = 0;
+const normalizeDate = (value) => (value ? new Date(value).toISOString().slice(0, 10) : "");
 
-  if (record.matchStatus === "matched") score += 50;
-  if (record.matchStatus === "partially_matched") score += 30;
-  if (record.productMatched) score += 10;
-  if (record.accountMatched) score += 10;
-  if (record.channelMatched) score += 10;
-  if (record.matchedOrderId) score += 10;
-  if (Array.isArray(record.matchedTargetAssignmentIds) && record.matchedTargetAssignmentIds.length > 0) score += 5;
+const normalizeNumber = (value) => String(Number(value || 0));
 
-  return score;
+const normalizeMoney = (value) => String(Math.round(Number(value || 0) * 100) / 100);
+
+const getAccountIdentity = (record) => normalizeText(record.shipToAccountName)
+  || normalizeId(record.accountId)
+  || normalizeText(record.accountName);
+
+const getProductIdentity = (record) => normalizeId(record.productId)
+  || normalizeText(record.productNickname || record.productName);
+
+const getChannelIdentity = (record) => normalizeKey(record.channelKey)
+  || normalizeId(record.channelId);
+
+const buildDuplicateKey = (record) => {
+  const baseParts = [
+    Number(record.year || 0),
+    Number(record.month || 0),
+  ];
+
+  if (normalizeText(record.invoiceNumber)) {
+    return [
+      "invoice",
+      ...baseParts,
+      normalizeText(record.invoiceNumber),
+      getAccountIdentity(record),
+      getProductIdentity(record),
+      getChannelIdentity(record),
+      normalizeNumber(record.quantity),
+      normalizeNumber(record.freeQuantity),
+    ].join("|");
+  }
+
+  return [
+    "fallback",
+    ...baseParts,
+    normalizeDate(record.salesDate),
+    normalizeText(record.accountName),
+    normalizeText(record.shipToAccountName),
+    normalizeText(record.productNickname || record.productName),
+    normalizeKey(record.channelKey),
+    normalizeNumber(record.quantity),
+    normalizeNumber(record.freeQuantity),
+    normalizeMoney(record.uploadedSalesValue),
+  ].join("|");
 };
+
+const hasAllCoreMatches = (record) => Boolean(record.productMatched && record.accountMatched && record.channelMatched);
 
 const buildCleanupQuery = async (input = {}) => {
   const query = {
@@ -77,7 +103,7 @@ const buildCleanupQuery = async (input = {}) => {
 const cleanupDuplicateSalesRecords = async (input = {}) => {
   const query = await buildCleanupQuery(input);
   const records = await SalesRecord.find(query)
-    .select("_id salesUploadBatchId invoiceNumber salesDate month year accountId accountName shipToAccountName productId productName productNickname channelId quantity freeQuantity uploadedSalesValue uploadedCurrency matchStatus productMatched accountMatched channelMatched matchedOrderId matchedTargetAssignmentIds matchNotes createdAt")
+    .select("_id salesUploadBatchId invoiceNumber salesDate month year accountId accountName shipToAccountName productId productName productNickname channelId channelKey quantity freeQuantity uploadedSalesValue uploadedCurrency matchStatus productMatched accountMatched channelMatched matchedOrderId matchedTargetAssignmentIds matchNotes createdAt")
     .sort({ createdAt: 1, _id: 1 });
   const groups = new Map();
 
@@ -94,13 +120,25 @@ const cleanupDuplicateSalesRecords = async (input = {}) => {
 
   for (const group of duplicateGroups) {
     const sorted = [...group].sort((left, right) => {
-      const scoreDifference = getRecordScore(right) - getRecordScore(left);
-
-      if (scoreDifference !== 0) {
-        return scoreDifference;
+      if ((right.matchStatus === "matched") !== (left.matchStatus === "matched")) {
+        return right.matchStatus === "matched" ? 1 : -1;
       }
 
-      return new Date(left.createdAt || 0) - new Date(right.createdAt || 0);
+      if (hasAllCoreMatches(right) !== hasAllCoreMatches(left)) {
+        return hasAllCoreMatches(right) ? 1 : -1;
+      }
+
+      if (Boolean(right.matchedOrderId) !== Boolean(left.matchedOrderId)) {
+        return right.matchedOrderId ? 1 : -1;
+      }
+
+      const createdDifference = new Date(left.createdAt || 0) - new Date(right.createdAt || 0);
+
+      if (createdDifference !== 0) {
+        return createdDifference;
+      }
+
+      return String(left._id).localeCompare(String(right._id));
     });
     const [kept, ...duplicates] = sorted;
 
@@ -126,7 +164,7 @@ const cleanupDuplicateSalesRecords = async (input = {}) => {
                     "",
                   ],
                 },
-                "Duplicate detected after upload cleanup",
+                "Duplicate deactivated by Refine Sales Data",
               ],
             },
             updatedAt: "$$NOW",

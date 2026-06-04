@@ -2078,6 +2078,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           productName: row.productName || productResult.product?.productName,
           productNickname: row.productNickname || productResult.product?.productNickname,
           channelId: channelResult.channel?._id,
+          channelKey: channelResult.channel?.channelKey || normalizeKey(row.channelKey),
           quantity: row.quantity,
           freeQuantity: row.freeQuantity,
           uploadedSalesValue: row.uploadedSalesValue,
@@ -2698,16 +2699,19 @@ router.post("/cleanup-duplicates", auth, loadSalesActor, requireManager, async (
       uploadSessionId: req.body.uploadSessionId,
       year: req.body.year,
       month: req.body.month,
+      apply: req.body.apply,
     });
 
     return res.status(200).json({
       success: true,
-      message: "Sales duplicate cleanup completed",
+      message: "Duplicate cleanup completed",
       data: {
         checkedRecords: result.checkedRecords,
         duplicateGroupsFound: result.duplicateGroupsFound,
         duplicatesDeactivated: result.duplicatesDeactivated,
         keptRecords: result.keptRecords,
+        duplicateRecordIds: result.duplicateRecordIds,
+        keptRecordIds: result.keptRecordIds,
       },
     });
   } catch (error) {
