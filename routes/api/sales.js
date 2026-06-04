@@ -2462,7 +2462,7 @@ router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (
       });
     }
 
-    const result = await recalculateSharedSales({
+    const recalculationInput = {
       batchId: req.body.batchId,
       uploadSessionId: req.body.uploadSessionId,
       year: req.body.year,
@@ -2475,12 +2475,45 @@ router.post("/apply-shared-sales", auth, loadSalesActor, requireManager, async (
       areaId: req.body.areaId,
       salesRecordIds: req.body.salesRecordIds,
       updatedBy: req.currentUser._id,
+    };
+
+    setImmediate(() => {
+      recalculateSharedSales(recalculationInput)
+        .then((result) => {
+          console.log("Shared sales background apply completed:", {
+            matchedCount: result.matchedCount,
+            updatedCount: result.updatedCount,
+            warningsCount: result.warnings?.length || 0,
+            batchId: recalculationInput.batchId,
+            uploadSessionId: recalculationInput.uploadSessionId,
+            year: recalculationInput.year,
+            month: recalculationInput.month,
+          });
+        })
+        .catch((error) => {
+          console.error("Shared sales background apply failed:", {
+            message: error.message,
+            batchId: recalculationInput.batchId,
+            uploadSessionId: recalculationInput.uploadSessionId,
+            year: recalculationInput.year,
+            month: recalculationInput.month,
+          });
+        });
     });
 
-    return res.status(200).json({
+    return res.status(202).json({
       success: true,
-      message: "Shared sales applied successfully",
-      data: result,
+      message: "Shared sales apply started",
+      data: {
+        started: true,
+        scope: {
+          batchId: recalculationInput.batchId || null,
+          uploadSessionId: recalculationInput.uploadSessionId || null,
+          year: recalculationInput.year !== undefined ? Number(recalculationInput.year) : null,
+          month: recalculationInput.month !== undefined ? Number(recalculationInput.month) : null,
+          salesRecordIdsCount: hasSalesRecordIds ? recalculationInput.salesRecordIds.length : 0,
+        },
+      },
     });
   } catch (error) {
     return next(error);
