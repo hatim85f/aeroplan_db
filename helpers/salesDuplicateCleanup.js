@@ -147,5 +147,6 @@ const cleanupDuplicateSalesRecords = async (input = {}) => {
 };
 
 module.exports = {
+  buildDuplicateKey,
   cleanupDuplicateSalesRecords,
 };

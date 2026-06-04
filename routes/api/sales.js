@@ -12,7 +12,7 @@ const SalesUploadBatch = require("../../models/SalesUploadBatch");
 const TargetAssignment = require("../../models/TargetAssignment");
 const User = require("../../models/User");
 const { applySharedSalesToRecord, recalculateSharedSales } = require("../../helpers/sharedSales");
-const { cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
+const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
 
 const router = express.Router();
@@ -2040,22 +2040,6 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           continue;
         }
 
-        const duplicateKey = [
-          row.invoiceNumber,
-          row.salesDate?.toISOString(),
-          normalizeText(row.accountName),
-          normalizeText(row.shipToAccountName),
-          normalizeText(row.productNickname || row.productName),
-          row.quantity,
-        ].join("|");
-        const isDuplicate = seenKeys.has(duplicateKey);
-
-        if (isDuplicate) {
-          duplicateRows += 1;
-        }
-
-        seenKeys.add(duplicateKey);
-
         const productResult = await matchProduct(row, productCandidates);
         const specialChannelResult = await detectSalesChannelByRule(row, productResult.product, detectionRules, channelLookup);
         const accountResult = await matchAccountBySource(
@@ -2081,6 +2065,31 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         if (matchStatus === "needs_review") {
           unmatched.push({ rowNumber, message: rowWarnings.join("; ") || "Record needs review", rawRow });
         }
+
+        const duplicateKey = buildDuplicateKey({
+          invoiceNumber: row.invoiceNumber,
+          salesDate: row.salesDate,
+          month: row.month || Number(req.body.month),
+          year: row.year || Number(req.body.year),
+          accountId: accountResult.account?._id,
+          accountName: row.accountName,
+          shipToAccountName: row.shipToAccountName,
+          productId: productResult.product?._id,
+          productName: row.productName || productResult.product?.productName,
+          productNickname: row.productNickname || productResult.product?.productNickname,
+          channelId: channelResult.channel?._id,
+          quantity: row.quantity,
+          freeQuantity: row.freeQuantity,
+          uploadedSalesValue: row.uploadedSalesValue,
+          uploadedCurrency: row.uploadedCurrency,
+        });
+        const isDuplicate = seenKeys.has(duplicateKey);
+
+        if (isDuplicate) {
+          duplicateRows += 1;
+        }
+
+        seenKeys.add(duplicateKey);
 
         const record = new SalesRecord({
           salesUploadBatchId: batch._id,
@@ -2167,10 +2176,15 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
 
     setImmediate(() => {
       cleanupDuplicateSalesRecords({
-        uploadSessionId,
-        batchId: batch._id,
-        month: Number(req.body.month),
         year: Number(req.body.year),
+        month: Number(req.body.month),
+      }).then((result) => {
+        console.log("Sales duplicate cleanup completed:", {
+          checkedRecords: result.checkedRecords,
+          duplicateGroupsFound: result.duplicateGroupsFound,
+          duplicatesDeactivated: result.duplicatesDeactivated,
+          keptRecords: result.keptRecords,
+        });
       }).catch((error) => {
         console.error("Background sales duplicate cleanup failed", error);
       });
