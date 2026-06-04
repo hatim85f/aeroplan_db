@@ -353,5 +353,6 @@ module.exports = {
   buildRuleRecalculationInput,
   buildSalesRecordRecalculationQuery,
   calculateAreaShares,
+  calculateAreaSharesFromRules,
   recalculateSharedSales,
 };

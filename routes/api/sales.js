@@ -8,11 +8,12 @@ const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
 const SalesDetectionRule = require("../../models/SalesDetectionRule");
 const SalesRecord = require("../../models/SalesRecord");
+const SharedSalesRule = require("../../models/SharedSalesRule");
 const SalesSheetMapping = require("../../models/SalesSheetMapping");
 const SalesUploadBatch = require("../../models/SalesUploadBatch");
 const TargetAssignment = require("../../models/TargetAssignment");
 const User = require("../../models/User");
-const { applySharedSalesToRecord, recalculateSharedSales } = require("../../helpers/sharedSales");
+const { applySharedSalesToRecord, calculateAreaSharesFromRules, recalculateSharedSales } = require("../../helpers/sharedSales");
 const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
 
@@ -31,6 +32,21 @@ const PRICE_FIELDS = [
   { field: "wholesaleAed", currency: "AED" },
   { field: "retailAed", currency: "AED" },
 ];
+
+const loadActiveSharedSalesRules = () => SharedSalesRule.find({
+  status: "active",
+  isActive: true,
+})
+  .populate("areaId", "areaName")
+  .lean();
+
+const applyPreloadedSharedSalesToRecord = (record, sharedSalesRules) => {
+  const sharedSales = calculateAreaSharesFromRules(record, sharedSalesRules);
+  record.areaShares = sharedSales.areaShares;
+  record.sharedSalesApplied = sharedSales.sharedSalesApplied;
+  return sharedSales;
+};
+
 const CHANNEL_TYPE_FIELD_KEYS = [
   "channelType",
   "marketType",
@@ -2030,11 +2046,14 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const warnings = [];
     const seenKeys = new Set();
     let duplicateRows = 0;
-    const [accountCandidates, productCandidates, activeChannels, detectionRules] = await Promise.all([
+    let sharedSalesAppliedRows = 0;
+    let sharedAreaSharesCreated = 0;
+    const [accountCandidates, productCandidates, activeChannels, detectionRules, sharedSalesRules] = await Promise.all([
       Account.find({}).lean(),
       Product.find({ status: "active", isActive: true }).lean(),
       SalesChannel.find({ status: "active", isActive: true }).lean(),
       loadSalesDetectionRules(req.currentUser),
+      loadActiveSharedSalesRules(),
     ]);
     const channelLookup = {
       byId: new Map(activeChannels.map((channel) => [String(channel._id), channel])),
@@ -2168,7 +2187,11 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
           updatedBy: req.currentUser._id,
         });
 
-        await applySharedSalesToRecord(record);
+        const sharedSales = applyPreloadedSharedSalesToRecord(record, sharedSalesRules);
+        if (sharedSales.sharedSalesApplied) {
+          sharedSalesAppliedRows += 1;
+          sharedAreaSharesCreated += sharedSales.areaShares.length;
+        }
         await record.save();
 
         createdRecords.push(record);
@@ -2200,6 +2223,11 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         failedRows: failed,
         unmatchedRows: unmatched,
         warnings,
+        sharedSales: {
+          activeRulesChecked: sharedSalesRules.length,
+          appliedRows: sharedSalesAppliedRows,
+          areaSharesCreated: sharedAreaSharesCreated,
+        },
       },
     };
 
@@ -2289,6 +2317,9 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     });
     const records = [];
     const failedItems = [];
+    let sharedSalesAppliedRows = 0;
+    let sharedAreaSharesCreated = 0;
+    const sharedSalesRules = await loadActiveSharedSalesRules();
 
     for (const [index, item] of manualItems.entries()) {
       const rowNumber = index + 1;
@@ -2400,7 +2431,11 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           updatedBy: req.currentUser._id,
         });
 
-        await applySharedSalesToRecord(record);
+        const sharedSales = applyPreloadedSharedSalesToRecord(record, sharedSalesRules);
+        if (sharedSales.sharedSalesApplied) {
+          sharedSalesAppliedRows += 1;
+          sharedAreaSharesCreated += sharedSales.areaShares.length;
+        }
         await record.save();
         records.push(record);
       } catch (error) {
@@ -2438,6 +2473,9 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           total: manualItems.length,
           createdCount: records.length,
           failedCount: failedItems.length,
+          sharedSalesAppliedRows,
+          sharedAreaSharesCreated,
+          activeSharedRulesChecked: sharedSalesRules.length,
         },
       },
     });
