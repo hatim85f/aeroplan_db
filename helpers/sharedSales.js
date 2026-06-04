@@ -18,41 +18,65 @@ const parseDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const buildDateChannelProductFilter = (record) => [
+  {
+    $or: [
+      { productId: record.productId },
+      { productId: { $exists: false } },
+      { productId: null },
+    ],
+  },
+  {
+    $or: [
+      { channelId: record.channelId },
+      { channelId: { $exists: false } },
+      { channelId: null },
+    ],
+  },
+  {
+    $or: [
+      { startDate: { $exists: false } },
+      { startDate: null },
+      { startDate: { $lte: record.salesDate } },
+    ],
+  },
+  {
+    $or: [
+      { endDate: { $exists: false } },
+      { endDate: null },
+      { endDate: { $gte: record.salesDate } },
+    ],
+  },
+];
+
 const buildSharedRuleQueryForRecord = (record) => ({
   accountId: record.accountId,
   status: "active",
   isActive: true,
-  $and: [
-    {
-      $or: [
-        { productId: record.productId },
-        { productId: { $exists: false } },
-        { productId: null },
-      ],
-    },
-    {
-      $or: [
-        { channelId: record.channelId },
-        { channelId: { $exists: false } },
-        { channelId: null },
-      ],
-    },
-    {
-      $or: [
-        { startDate: { $exists: false } },
-        { startDate: null },
-        { startDate: { $lte: record.salesDate } },
-      ],
-    },
-    {
-      $or: [
-        { endDate: { $exists: false } },
-        { endDate: null },
-        { endDate: { $gte: record.salesDate } },
-      ],
-    },
-  ],
+  $and: buildDateChannelProductFilter(record),
 });
+
+const buildUploaderAreaRuleQuery = (record) => ({
+  areaId: record.uploaderAreaId,
+  status: "active",
+  isActive: true,
+  $and: buildDateChannelProductFilter(record),
+});
+
+const buildShareEntry = (record, areaIdVal, areaNameVal, sharePercentage, ruleId) => {
+  const ratio = sharePercentage / 100;
+  return {
+    areaId: areaIdVal,
+    areaName: areaNameVal,
+    sharePercentage,
+    sharedQuantity: (Number(record.quantity) || 0) * ratio,
+    sharedFreeQuantity: (Number(record.freeQuantity) || 0) * ratio,
+    sharedCalculatedCifUsd: (Number(record.calculatedCifUsd) || 0) * ratio,
+    sharedCalculatedWholesaleAed: (Number(record.calculatedWholesaleAed) || 0) * ratio,
+    sharedCalculatedRetailAed: (Number(record.calculatedRetailAed) || 0) * ratio,
+    ruleId,
+  };
+};
 
 const calculateAreaShares = async (record) => {
   if (!record?.accountId || !record?.productId || !record?.channelId || !record?.salesDate) {
@@ -62,66 +86,72 @@ const calculateAreaShares = async (record) => {
     };
   }
 
-  const rules = await SharedSalesRule.find(buildSharedRuleQueryForRecord(record))
-    .populate("areaId", "areaName")
-    .lean();
+  const [otherAreaRules, uploaderRule] = await Promise.all([
+    SharedSalesRule.find(buildSharedRuleQueryForRecord(record))
+      .populate("areaId", "areaName")
+      .lean(),
+    record.uploaderAreaId
+      ? SharedSalesRule.findOne(buildUploaderAreaRuleQuery(record))
+          .populate("areaId", "areaName")
+          .lean()
+      : Promise.resolve(null),
+  ]);
 
-  if (rules.length === 0) {
+  if (otherAreaRules.length === 0 && !uploaderRule) {
     return {
       areaShares: [],
       sharedSalesApplied: false,
     };
   }
 
-  const areaShares = rules.map((rule) => {
-    const sharePercentage = Number(rule.sharePercentage) || 0;
-    const ratio = sharePercentage / 100;
+  const uploaderAreaIdStr = record.uploaderAreaId ? String(record.uploaderAreaId) : null;
 
-    return {
-      areaId: rule.areaId?._id || rule.areaId,
-      areaName: rule.areaId?.areaName,
-      sharePercentage,
-      sharedQuantity: (Number(record.quantity) || 0) * ratio,
-      sharedFreeQuantity: (Number(record.freeQuantity) || 0) * ratio,
-      sharedCalculatedCifUsd: (Number(record.calculatedCifUsd) || 0) * ratio,
-      sharedCalculatedWholesaleAed: (Number(record.calculatedWholesaleAed) || 0) * ratio,
-      sharedCalculatedRetailAed: (Number(record.calculatedRetailAed) || 0) * ratio,
-      ruleId: rule._id,
-    };
-  });
+  // Exclude uploader's area from the account-based rules to avoid double-counting
+  const filteredOtherRules = uploaderAreaIdStr
+    ? otherAreaRules.filter((rule) => String(rule.areaId?._id || rule.areaId) !== uploaderAreaIdStr)
+    : otherAreaRules;
 
-  const uploaderAreaId = record.uploaderAreaId;
+  const areaShares = filteredOtherRules.map((rule) => buildShareEntry(
+    record,
+    rule.areaId?._id || rule.areaId,
+    rule.areaId?.areaName,
+    Number(rule.sharePercentage) || 0,
+    rule._id,
+  ));
 
-  if (uploaderAreaId) {
-    const uploaderAreaIdStr = String(uploaderAreaId);
-    const alreadyCovered = areaShares.some((share) => String(share.areaId) === uploaderAreaIdStr);
-
-    if (!alreadyCovered) {
+  if (record.uploaderAreaId) {
+    if (uploaderRule) {
+      const sharePercentage = Number(uploaderRule.sharePercentage) || 0;
+      if (sharePercentage > 0) {
+        areaShares.unshift(buildShareEntry(
+          record,
+          uploaderRule.areaId?._id || uploaderRule.areaId,
+          uploaderRule.areaId?.areaName,
+          sharePercentage,
+          uploaderRule._id,
+        ));
+      }
+    } else {
+      // No explicit rule for uploader's area — give them the remainder
       const totalSharedPercentage = areaShares.reduce((sum, share) => sum + share.sharePercentage, 0);
       const remainderPercentage = Math.max(0, 100 - totalSharedPercentage);
 
       if (remainderPercentage > 0) {
-        const uploaderArea = await Area.findById(uploaderAreaId).select("areaName").lean();
-        const remainderRatio = remainderPercentage / 100;
-
-        areaShares.unshift({
-          areaId: uploaderAreaId,
-          areaName: uploaderArea?.areaName,
-          sharePercentage: remainderPercentage,
-          sharedQuantity: (Number(record.quantity) || 0) * remainderRatio,
-          sharedFreeQuantity: (Number(record.freeQuantity) || 0) * remainderRatio,
-          sharedCalculatedCifUsd: (Number(record.calculatedCifUsd) || 0) * remainderRatio,
-          sharedCalculatedWholesaleAed: (Number(record.calculatedWholesaleAed) || 0) * remainderRatio,
-          sharedCalculatedRetailAed: (Number(record.calculatedRetailAed) || 0) * remainderRatio,
-          ruleId: null,
-        });
+        const uploaderArea = await Area.findById(record.uploaderAreaId).select("areaName").lean();
+        areaShares.unshift(buildShareEntry(
+          record,
+          record.uploaderAreaId,
+          uploaderArea?.areaName,
+          remainderPercentage,
+          null,
+        ));
       }
     }
   }
 
   return {
     areaShares,
-    sharedSalesApplied: true,
+    sharedSalesApplied: areaShares.length > 0,
   };
 };
 

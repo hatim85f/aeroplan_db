@@ -3164,6 +3164,32 @@ router.get("/:id", auth, loadSalesActor, async (req, res, next) => {
   }
 });
 
+router.post("/:id/apply-area-shares", auth, loadSalesActor, async (req, res, next) => {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Sales record id must be a valid MongoDB ObjectId" });
+    }
+
+    const record = await getScopedSalesRecord(req.params.id, req.currentUser);
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Sales record not found" });
+    }
+
+    await applySharedSalesToRecord(record);
+    record.updatedBy = req.currentUser._id;
+    await record.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Area shares applied successfully",
+      data: record,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     if (!isValidObjectId(req.params.id)) {
