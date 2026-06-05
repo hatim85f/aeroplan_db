@@ -3173,6 +3173,60 @@ router.delete("/batches/:id", auth, loadSalesActor, requireManager, async (req, 
   }
 });
 
+router.delete("/month", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const month = req.body.month ?? req.query.month;
+    const year = req.body.year ?? req.query.year;
+    const validationError = validateMonthYear(month, year);
+
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
+
+    const normalizedMonth = Number(month);
+    const normalizedYear = Number(year);
+    const salesQuery = {
+      ...await getAccessibleSalesQuery(req.currentUser),
+      month: normalizedMonth,
+      year: normalizedYear,
+    };
+    const batchIds = (await SalesRecord.distinct("salesUploadBatchId", salesQuery)).filter(Boolean);
+    const deleteResult = await SalesRecord.deleteMany(salesQuery);
+    const batchUpdateResult = batchIds.length > 0
+      ? await SalesUploadBatch.updateMany(
+        {
+          ...await getAccessibleSalesBatchQuery(req.currentUser),
+          _id: { $in: batchIds },
+          month: normalizedMonth,
+          year: normalizedYear,
+        },
+        {
+          $set: { status: "failed" },
+          $push: {
+            warnings: {
+              rowNumber: 0,
+              message: `Sales records deleted for ${normalizedMonth}/${normalizedYear}`,
+            },
+          },
+        },
+      )
+      : { modifiedCount: 0 };
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales records deleted for selected month",
+      data: {
+        month: normalizedMonth,
+        year: normalizedYear,
+        deletedSalesRecords: deleteResult.deletedCount || 0,
+        deactivatedBatches: batchUpdateResult.modifiedCount || 0,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.get("/", auth, loadSalesActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
