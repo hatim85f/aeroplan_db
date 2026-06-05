@@ -402,7 +402,7 @@ const syncAccountSalesTeamLinks = async (accountId, salesTeamIds) => {
 
 router.get("/", auth, async (req, res, next) => {
   try {
-    const shouldPaginate = req.query.page !== undefined || req.query.limit !== undefined;
+    const shouldPaginate = String(req.query.paginate || "").trim().toLowerCase() === "true";
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const skip = shouldPaginate ? (page - 1) * limit : 0;
