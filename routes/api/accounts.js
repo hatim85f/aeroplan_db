@@ -402,9 +402,10 @@ const syncAccountSalesTeamLinks = async (accountId, salesTeamIds) => {
 
 router.get("/", auth, async (req, res, next) => {
   try {
+    const shouldPaginate = req.query.page !== undefined || req.query.limit !== undefined;
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const skip = (page - 1) * limit;
+    const skip = shouldPaginate ? (page - 1) * limit : 0;
     const query = {};
 
     if (req.query.search) {
@@ -439,14 +440,16 @@ router.get("/", auth, async (req, res, next) => {
       query.territory = { $regex: String(req.query.territory).trim(), $options: "i" };
     }
 
+    const accountsQuery = Account.find(query)
+      .collation({ locale: "en", strength: 2 })
+      .sort({ accountName: 1 });
+
+    if (shouldPaginate) {
+      accountsQuery.skip(skip).limit(limit);
+    }
+
     const [accounts, total] = await Promise.all([
-      populateAccount(
-        Account.find(query)
-          .collation({ locale: "en", strength: 2 })
-          .sort({ accountName: 1 })
-          .skip(skip)
-          .limit(limit),
-      ),
+      populateAccount(accountsQuery),
       Account.countDocuments(query),
     ]);
 
@@ -456,9 +459,9 @@ router.get("/", auth, async (req, res, next) => {
       data: accounts,
       pagination: {
         page,
-        limit,
+        limit: shouldPaginate ? limit : total,
         total,
-        pages: Math.ceil(total / limit),
+        pages: shouldPaginate ? Math.ceil(total / limit) : 1,
       },
     });
   } catch (error) {
