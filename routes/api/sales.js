@@ -3016,6 +3016,7 @@ router.get("/channel-items", auth, loadSalesActor, async (req, res, next) => {
     const baseQuery = await buildSalesQuery(req.query, req.currentUser);
     baseQuery.status = baseQuery.status || "active";
     baseQuery.isActive = true;
+    const targetYear = Number(req.query.year);
 
     const data = await SalesRecord.aggregate([
       { $match: baseQuery },
@@ -3031,8 +3032,85 @@ router.get("/channel-items", auth, loadSalesActor, async (req, res, next) => {
           qty: { $sum: "$quantity" },
           focQty: { $sum: "$freeQuantity" },
           cif: { $sum: "$calculatedCifUsd" },
-          target_CIF: { $sum: "$targetCalculatedValue" },
           value: { $sum: "$calculatedWholesaleAed" },
+        },
+      },
+      {
+        $lookup: {
+          from: "targetassignments",
+          let: {
+            productId: "$_id.productId",
+            channelId: "$_id.channelId",
+          },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$productId", "$$productId"] },
+                    { $eq: ["$channelId", "$$channelId"] },
+                    ...(Number.isInteger(targetYear) ? [{ $eq: ["$year", targetYear] }] : []),
+                    { $eq: ["$status", "active"] },
+                    { $eq: ["$isActive", true] },
+                  ],
+                },
+              },
+            },
+            { $sort: { updatedAt: -1, createdAt: -1 } },
+            { $limit: 1 },
+            { $project: { _id: 0, targetValueBasis: 1 } },
+          ],
+          as: "targetAssignment",
+        },
+      },
+      {
+        $lookup: {
+          from: "products",
+          localField: "_id.productId",
+          foreignField: "_id",
+          as: "product",
+        },
+      },
+      {
+        $set: {
+          assignmentTargetValueBasis: { $first: "$targetAssignment.targetValueBasis" },
+          product: { $first: "$product" },
+        },
+      },
+      {
+        $set: {
+          channelPricing: {
+            $first: {
+              $filter: {
+                input: { $ifNull: ["$product.channelPricing", []] },
+                as: "pricing",
+                cond: { $eq: ["$$pricing.channelId", "$_id.channelId"] },
+              },
+            },
+          },
+        },
+      },
+      {
+        $set: {
+          targetValueBasis: {
+            $ifNull: [
+              "$assignmentTargetValueBasis",
+              { $ifNull: ["$channelPricing.targetValueBasis", "cifUsd"] },
+            ],
+          },
+        },
+      },
+      {
+        $set: {
+          target_CIF: {
+            $switch: {
+              branches: [
+                { case: { $eq: ["$targetValueBasis", "wholesaleAed"] }, then: { $ifNull: ["$channelPricing.wholesaleAed", 0] } },
+                { case: { $eq: ["$targetValueBasis", "retailAed"] }, then: { $ifNull: ["$channelPricing.retailAed", 0] } },
+              ],
+              default: { $ifNull: ["$channelPricing.cifUsd", 0] },
+            },
+          },
         },
       },
       {
@@ -3049,6 +3127,7 @@ router.get("/channel-items", auth, loadSalesActor, async (req, res, next) => {
           totalRecords: 1,
           cif: 1,
           target_CIF: 1,
+          targetValueBasis: 1,
           qty: 1,
           focQty: 1,
           value: 1,
