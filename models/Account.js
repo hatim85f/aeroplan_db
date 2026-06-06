@@ -2,6 +2,18 @@ const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
 
+const normalizeTextKey = (value) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/\s+/g, " ");
+
+const normalizePhoneKey = (value) => String(value || "").replace(/[^\d+]/g, "");
+
+const normalizeGoogleMapsLinkKey = (value) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/\/+$/, "");
+
 const locationSchema = new Schema(
   {
     address: {
@@ -137,5 +149,25 @@ accountSchema.index({
 });
 accountSchema.index({ accountNameKey: 1, phoneNumberKey: 1 }, { sparse: true });
 accountSchema.index({ accountNameKey: 1, addressKey: 1 }, { sparse: true });
+
+accountSchema.pre("validate", function normalizeAccountKeys(next) {
+  if (this.accountName) {
+    this.accountNameKey = normalizeTextKey(this.accountName);
+  }
+
+  if (this.phoneNumber) {
+    this.phoneNumberKey = normalizePhoneKey(this.phoneNumber) || undefined;
+  }
+
+  if (this.location?.googleMapsLink) {
+    this.googleMapsLinkKey = normalizeGoogleMapsLinkKey(this.location.googleMapsLink) || undefined;
+  }
+
+  if (this.location?.address) {
+    this.addressKey = normalizeTextKey(this.location.address) || undefined;
+  }
+
+  next();
+});
 
 module.exports = mongoose.model("Account", accountSchema);

@@ -38,9 +38,10 @@ const main = async () => {
   const accountName = getArg("accountName");
   const canonicalAccountId = getArg("canonicalAccountId");
   const apply = process.argv.includes("--apply");
+  const fixAll = process.argv.includes("--all");
 
-  if (!accountName) {
-    throw new Error("Usage: node scripts/fix-sales-account-link.js --accountName=\"Name\" [--canonicalAccountId=<id>] [--apply]");
+  if (!fixAll && !accountName) {
+    throw new Error("Usage: node scripts/fix-sales-account-link.js --accountName=\"Name\" [--canonicalAccountId=<id>] [--apply] OR --all [--apply]");
   }
 
   if (canonicalAccountId && !mongoose.Types.ObjectId.isValid(canonicalAccountId)) {
@@ -49,90 +50,120 @@ const main = async () => {
 
   await mongoose.connect(process.env.MONGO_URI || process.env.mongoURI);
 
-  const normalizedName = normalizeText(accountName);
   const allAccounts = await Account.find({}).lean();
-  const matchingAccounts = allAccounts
-    .filter((account) => normalizeText(account.accountName) === normalizedName)
-    .sort((left, right) => (
+  const sortAccounts = (accounts) => [...accounts].sort((left, right) => (
       getAccountMatchPriority(right) - getAccountMatchPriority(left)
       || new Date(right.updatedAt || right.createdAt || 0) - new Date(left.updatedAt || left.createdAt || 0)
-    ));
+  ));
+  const groupsByName = allAccounts.reduce((groups, account) => {
+    const key = normalizeText(account.accountName);
 
-  const canonicalAccount = canonicalAccountId
-    ? await Account.findById(canonicalAccountId).lean()
-    : matchingAccounts[0];
+    if (!key) {
+      return groups;
+    }
 
-  if (!canonicalAccount) {
-    throw new Error("Canonical account not found");
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+
+    groups.get(key).push(account);
+    return groups;
+  }, new Map());
+  const requestedGroups = fixAll
+    ? [...groupsByName.entries()]
+    : [[normalizeText(accountName), groupsByName.get(normalizeText(accountName)) || []]];
+  const results = [];
+
+  for (const [normalizedName, accounts] of requestedGroups) {
+    const matchingAccounts = sortAccounts(accounts);
+    const canonicalAccount = canonicalAccountId && !fixAll
+      ? await Account.findById(canonicalAccountId).lean()
+      : matchingAccounts[0];
+
+    if (!canonicalAccount) {
+      if (!fixAll) {
+        throw new Error("Canonical account not found");
+      }
+      continue;
+    }
+
+    const names = [...new Set(matchingAccounts.map((account) => account.accountName).filter(Boolean))];
+    const nameRegexes = names.map((name) => new RegExp(`^${escapeRegex(name.trim())}$`, "i"));
+    const canonicalIdString = String(canonicalAccount._id);
+    const baseNameQuery = {
+      $or: [
+        { accountName: { $in: nameRegexes } },
+        { shipToAccountName: { $in: nameRegexes } },
+      ],
+    };
+    const query = {
+      ...baseNameQuery,
+      accountId: { $ne: canonicalAccount._id },
+    };
+    const beforeCount = await SalesRecord.countDocuments(query);
+    const recordsByAccountId = await SalesRecord.aggregate([
+      {
+        $match: baseNameQuery,
+      },
+      {
+        $group: {
+          _id: "$accountId",
+          count: { $sum: 1 },
+          activeCount: { $sum: { $cond: [{ $and: [{ $eq: ["$status", "active"] }, { $eq: ["$isActive", true] }] }, 1, 0] } },
+        },
+      },
+    ]);
+    const summary = {
+      normalizedName,
+      canonicalAccount: {
+        _id: canonicalAccount._id,
+        accountName: canonicalAccount.accountName,
+        priority: getAccountMatchPriority(canonicalAccount),
+      },
+      matchingAccounts: matchingAccounts.map((account) => ({
+        _id: account._id,
+        accountName: account.accountName,
+        priority: getAccountMatchPriority(account),
+        keyContact: account.keyContact,
+        area: account.area,
+        territory: account.territory,
+      })),
+      salesRecordsByAccountId: recordsByAccountId.map((row) => ({
+        accountId: row._id ? String(row._id) : null,
+        count: row.count,
+        activeCount: row.activeCount,
+        isCanonical: row._id ? String(row._id) === canonicalIdString : false,
+      })),
+      recordsToUpdate: beforeCount,
+    };
+
+    if (apply && beforeCount > 0) {
+      const result = await SalesRecord.updateMany(query, {
+        $set: {
+          accountId: canonicalAccount._id,
+          accountName: canonicalAccount.accountName,
+          accountMatched: true,
+        },
+      });
+
+      summary.matchedCount = result.matchedCount;
+      summary.modifiedCount = result.modifiedCount;
+    }
+
+    if (beforeCount > 0 || matchingAccounts.length > 1 || !fixAll) {
+      results.push(summary);
+    }
   }
-
-  const exactNameRegex = new RegExp(`^${escapeRegex(accountName.trim())}$`, "i");
-  const canonicalIdString = String(canonicalAccount._id);
-  const query = {
-    $or: [
-      { accountName: exactNameRegex },
-      { shipToAccountName: exactNameRegex },
-    ],
-    accountId: { $ne: canonicalAccount._id },
-  };
-  const beforeCount = await SalesRecord.countDocuments(query);
-  const recordsByAccountId = await SalesRecord.aggregate([
-    {
-      $match: {
-        $or: [
-          { accountName: exactNameRegex },
-          { shipToAccountName: exactNameRegex },
-        ],
-      },
-    },
-    {
-      $group: {
-        _id: "$accountId",
-        count: { $sum: 1 },
-        activeCount: { $sum: { $cond: [{ $and: [{ $eq: ["$status", "active"] }, { $eq: ["$isActive", true] }] }, 1, 0] } },
-      },
-    },
-  ]);
 
   console.log(JSON.stringify({
     apply,
-    accountName,
-    canonicalAccount: {
-      _id: canonicalAccount._id,
-      accountName: canonicalAccount.accountName,
-      priority: getAccountMatchPriority(canonicalAccount),
-    },
-    matchingAccounts: matchingAccounts.map((account) => ({
-      _id: account._id,
-      accountName: account.accountName,
-      priority: getAccountMatchPriority(account),
-      keyContact: account.keyContact,
-      area: account.area,
-      territory: account.territory,
-    })),
-    salesRecordsByAccountId: recordsByAccountId.map((row) => ({
-      accountId: row._id ? String(row._id) : null,
-      count: row.count,
-      activeCount: row.activeCount,
-      isCanonical: row._id ? String(row._id) === canonicalIdString : false,
-    })),
-    recordsToUpdate: beforeCount,
+    mode: fixAll ? "all" : "single",
+    scannedAccountNameGroups: requestedGroups.length,
+    groupsNeedingAttention: results.length,
+    totalRecordsToUpdate: results.reduce((total, result) => total + result.recordsToUpdate, 0),
+    totalModified: results.reduce((total, result) => total + (result.modifiedCount || 0), 0),
+    results,
   }, null, 2));
-
-  if (apply && beforeCount > 0) {
-    const result = await SalesRecord.updateMany(query, {
-      $set: {
-        accountId: canonicalAccount._id,
-        accountName: canonicalAccount.accountName,
-        accountMatched: true,
-      },
-    });
-
-    console.log(JSON.stringify({
-      matchedCount: result.matchedCount,
-      modifiedCount: result.modifiedCount,
-    }, null, 2));
-  }
 
   await mongoose.disconnect();
 };

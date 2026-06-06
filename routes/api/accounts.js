@@ -223,6 +223,18 @@ const buildDuplicateAccountQuery = (payload) => {
     });
   }
 
+  if (payload.accountNameKey) {
+    checks.push({
+      query: {
+        $or: [
+          { accountNameKey: payload.accountNameKey },
+          { accountName: exactTextRegex(payload.accountName || payload.accountNameKey) },
+        ],
+      },
+      matchType: "accountName",
+    });
+  }
+
   if (payload.accountNameKey && payload.phoneNumberKey) {
     checks.push({
       query: {
@@ -301,6 +313,9 @@ const buildBatchDuplicateKeys = (payload) => {
 
   if (payload.googleMapsLinkKey) {
     keys.push(`googleMapsLink:${payload.googleMapsLinkKey}`);
+  }
+  if (payload.accountNameKey) {
+    keys.push(`accountName:${payload.accountNameKey}`);
   }
   if (payload.accountNameKey && payload.phoneNumberKey) {
     keys.push(`accountNamePhoneNumber:${payload.accountNameKey}:${payload.phoneNumberKey}`);
