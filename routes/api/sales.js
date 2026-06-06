@@ -625,7 +625,7 @@ const matchProduct = async (row, productCandidates = null) => {
 };
 
 const createPlaceholderAccount = async (row, user) => {
-  const accountName = String(row.shipToAccountName || row.accountName || "").trim();
+  const accountName = String(row.accountName || row.shipToAccountName || "").trim();
 
   if (!accountName) {
     return { account: null, warning: "Account could not be matched" };
@@ -651,8 +651,8 @@ const createPlaceholderAccount = async (row, user) => {
 
 const matchAccount = async (row, user, accountCandidates = null) => {
   const inputs = [
-    row.shipToAccountName,
     row.accountName,
+    row.shipToAccountName,
   ].filter(Boolean);
 
   const candidates = Array.isArray(accountCandidates)

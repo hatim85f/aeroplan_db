@@ -91,10 +91,7 @@ const main = async () => {
     const nameRegexes = names.map((name) => new RegExp(`^${escapeRegex(name.trim())}$`, "i"));
     const canonicalIdString = String(canonicalAccount._id);
     const baseNameQuery = {
-      $or: [
-        { accountName: { $in: nameRegexes } },
-        { shipToAccountName: { $in: nameRegexes } },
-      ],
+      accountName: { $in: nameRegexes },
     };
     const query = {
       ...baseNameQuery,
