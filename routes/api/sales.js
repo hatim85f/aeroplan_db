@@ -2934,6 +2934,10 @@ router.get("/channel-breakdown", auth, loadSalesActor, async (req, res, next) =>
 
     baseQuery.status = baseQuery.status || "active";
     baseQuery.isActive = true;
+    baseQuery.productId = baseQuery.productId || { $exists: true, $ne: null };
+    baseQuery.channelId = baseQuery.channelId || { $exists: true, $ne: null };
+    baseQuery.productMatched = true;
+    baseQuery.channelMatched = true;
 
     const productRows = await SalesRecord.aggregate([
       { $match: baseQuery },
