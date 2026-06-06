@@ -2866,12 +2866,13 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       ])
       : [null];
 
-    const groupBy = async (idField, nameField) => SalesRecord.aggregate([
+    const groupBy = async (idField, nameField, extraGroupFields = {}) => SalesRecord.aggregate([
       { $match: baseQuery },
       {
         $group: {
           _id: `$${idField}`,
           name: { $first: `$${nameField}` },
+          ...extraGroupFields,
           totalQuantity: { $sum: "$quantity" },
           totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
@@ -2885,7 +2886,10 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
 
     const [salesByProduct, salesByAccount, salesByChannel] = await Promise.all([
       groupBy("productId", "productName"),
-      groupBy("accountId", "accountName"),
+      groupBy("accountId", "accountName", {
+        shipToAccountName: { $first: "$shipToAccountName" },
+        shipToAccountNames: { $addToSet: "$shipToAccountName" },
+      }),
       groupBy("channelId", "channelName"),
     ]);
     const uploadedSalesByCurrency = await SalesRecord.aggregate([
@@ -3000,6 +3004,60 @@ router.get("/channel-breakdown", auth, loadSalesActor, async (req, res, next) =>
     return res.status(200).json({
       success: true,
       message: "Sales channel breakdown fetched successfully",
+      data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/channel-items", auth, loadSalesActor, async (req, res, next) => {
+  try {
+    const baseQuery = await buildSalesQuery(req.query, req.currentUser);
+    baseQuery.status = baseQuery.status || "active";
+    baseQuery.isActive = true;
+
+    const data = await SalesRecord.aggregate([
+      { $match: baseQuery },
+      {
+        $group: {
+          _id: {
+            channelId: "$channelId",
+            channelName: "$channelName",
+            productId: "$productId",
+            productName: "$productName",
+          },
+          totalRecords: { $sum: 1 },
+          qty: { $sum: "$quantity" },
+          focQty: { $sum: "$freeQuantity" },
+          cif: { $sum: "$calculatedCifUsd" },
+          value: { $sum: "$calculatedWholesaleAed" },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          channelId: {
+            $cond: [{ $ne: ["$_id.channelId", null] }, { $toString: "$_id.channelId" }, null],
+          },
+          channelName: { $ifNull: ["$_id.channelName", "Unknown"] },
+          productId: {
+            $cond: [{ $ne: ["$_id.productId", null] }, { $toString: "$_id.productId" }, null],
+          },
+          itemName: { $ifNull: ["$_id.productName", "Unknown"] },
+          totalRecords: 1,
+          cif: 1,
+          qty: 1,
+          focQty: 1,
+          value: 1,
+        },
+      },
+      { $sort: { channelName: 1, qty: -1, itemName: 1 } },
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales channel items fetched successfully",
       data,
     });
   } catch (error) {
