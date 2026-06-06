@@ -131,6 +131,34 @@ const getAccountSimilarityScore = (input, accountName) => {
   return Math.max(tokenScore, containsScore);
 };
 
+const isPlaceholderText = (value) => normalizeText(value).includes("placeholder");
+
+const getAccountMatchPriority = (account) => {
+  let priority = 0;
+
+  if (account?.keyContact && !isPlaceholderText(account.keyContact)) priority += 4;
+  if (account?.area && !isPlaceholderText(account.area)) priority += 3;
+  if (account?.territory && !isPlaceholderText(account.territory)) priority += 3;
+  if (account?.location?.address && !isPlaceholderText(account.location.address)) priority += 2;
+  if (Array.isArray(account?.salesTeamIds) && account.salesTeamIds.length > 0) priority += 2;
+  if (Array.isArray(account?.assignedMedicalRepIds) && account.assignedMedicalRepIds.length > 0) priority += 1;
+
+  return priority;
+};
+
+const getBestAccountMatch = (matches = []) => {
+  if (matches.length <= 1) {
+    return matches[0] || null;
+  }
+
+  const sortedMatches = [...matches].sort((left, right) => (
+    getAccountMatchPriority(right) - getAccountMatchPriority(left)
+    || new Date(right.updatedAt || right.createdAt || 0) - new Date(left.updatedAt || left.createdAt || 0)
+  ));
+
+  return sortedMatches[0];
+};
+
 const normalizeKey = (value) => String(value || "")
   .trim()
   .toLowerCase()
@@ -633,14 +661,14 @@ const matchAccount = async (row, user, accountCandidates = null) => {
 
   for (const input of inputs) {
     const normalizedInput = normalizeText(input);
-    const matches = candidates.filter((account) => normalizeText(account.accountName) === normalizedInput).slice(0, 2);
+    const matches = candidates.filter((account) => normalizeText(account.accountName) === normalizedInput);
+    const bestMatch = getBestAccountMatch(matches);
 
-    if (matches.length === 1) {
-      return { account: matches[0], warning: null };
-    }
-
-    if (matches.length > 1) {
-      return { account: null, warning: `Multiple accounts matched "${input}"` };
+    if (bestMatch) {
+      const warning = matches.length > 1
+        ? `Multiple accounts matched "${input}", selected ${bestMatch.accountName}`
+        : null;
+      return { account: bestMatch, warning };
     }
   }
 
@@ -648,13 +676,13 @@ const matchAccount = async (row, user, accountCandidates = null) => {
 
   if (normalizedInputs.length > 0) {
     const matches = candidates.filter((account) => normalizedInputs.includes(normalizeText(account.accountName)));
+    const bestMatch = getBestAccountMatch(matches);
 
-    if (matches.length === 1) {
-      return { account: matches[0], warning: null };
-    }
-
-    if (matches.length > 1) {
-      return { account: null, warning: "Multiple accounts matched after normalization" };
+    if (bestMatch) {
+      const warning = matches.length > 1
+        ? `Multiple accounts matched after normalization, selected ${bestMatch.accountName}`
+        : null;
+      return { account: bestMatch, warning };
     }
   }
 
