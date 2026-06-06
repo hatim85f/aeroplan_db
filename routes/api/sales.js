@@ -2908,120 +2908,74 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
 router.get("/channel-breakdown", auth, loadSalesActor, async (req, res, next) => {
   try {
     const year = Number(req.query.year);
-    const month = req.query.month !== undefined ? Number(req.query.month) : undefined;
+    const month = Number(req.query.month);
 
     if (!Number.isInteger(year) || year < 2000 || year > 2100) {
       return res.status(400).json({ success: false, message: "year must be a number between 2000 and 2100" });
     }
 
-    if (req.query.month !== undefined && (!Number.isInteger(month) || month < 1 || month > 12)) {
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
       return res.status(400).json({ success: false, message: "month must be a number between 1 and 12" });
     }
 
-    const objectIdParams = ["accountId", "productId", "channelId", "areaId"];
-    const invalidObjectIdParam = objectIdParams.find((param) => req.query[param] && !isValidObjectId(req.query[param]));
-
-    if (invalidObjectIdParam) {
-      return res.status(400).json({ success: false, message: `${invalidObjectIdParam} must be a valid MongoDB ObjectId` });
+    if (!req.query.accountId || !isValidObjectId(req.query.accountId)) {
+      return res.status(400).json({ success: false, message: "accountId must be a valid MongoDB ObjectId" });
     }
 
-    const baseQuery = await buildSalesQuery(req.query, req.currentUser);
-    baseQuery.year = year;
+    const baseQuery = {
+      ...await buildSalesQuery({
+        year,
+        month,
+        accountId: req.query.accountId,
+      }, req.currentUser),
+      year,
+      month,
+      status: "active",
+      isActive: true,
+    };
 
-    if (month !== undefined) {
-      baseQuery.month = month;
-    }
-
-    baseQuery.status = baseQuery.status || "active";
-    baseQuery.isActive = true;
-    baseQuery.productId = baseQuery.productId || { $exists: true, $ne: null };
-    baseQuery.channelId = baseQuery.channelId || { $exists: true, $ne: null };
-
-    const productRows = await SalesRecord.aggregate([
+    const data = await SalesRecord.aggregate([
       { $match: baseQuery },
       {
         $group: {
           _id: {
             channelId: "$channelId",
+            channelName: "$channelName",
             productId: "$productId",
+            productName: "$productName",
           },
-          channelName: { $first: "$channelName" },
-          productName: { $first: "$productName" },
           totalRecords: { $sum: 1 },
-          totalQuantity: { $sum: "$quantity" },
-          totalFocQuantity: { $sum: "$freeQuantity" },
+          quantity: { $sum: "$quantity" },
+          focQuantity: { $sum: "$freeQuantity" },
           totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
         },
       },
-      { $sort: { channelName: 1, totalQuantity: -1, productName: 1 } },
+      {
+        $project: {
+          _id: 0,
+          channelId: {
+            $cond: [{ $ne: ["$_id.channelId", null] }, { $toString: "$_id.channelId" }, null],
+          },
+          channelName: { $ifNull: ["$_id.channelName", "Unknown"] },
+          productId: {
+            $cond: [{ $ne: ["$_id.productId", null] }, { $toString: "$_id.productId" }, null],
+          },
+          name: { $ifNull: ["$_id.productName", "Unknown"] },
+          totalRecords: 1,
+          quantity: 1,
+          focQuantity: 1,
+          totalCalculatedCifUsd: 1,
+          totalCalculatedWholesaleAed: 1,
+        },
+      },
+      { $sort: { channelName: 1, quantity: -1, name: 1 } },
     ]);
-
-    const channelMap = new Map();
-    const totals = {
-      totalRecords: 0,
-      totalQuantity: 0,
-      totalFocQuantity: 0,
-      totalCalculatedCifUsd: 0,
-      totalCalculatedWholesaleAed: 0,
-    };
-
-    productRows.forEach((row) => {
-      const channelId = row._id.channelId ? String(row._id.channelId) : null;
-      const channelKey = channelId || "__unknown__";
-      const productId = row._id.productId ? String(row._id.productId) : null;
-      const totalRecords = Number(row.totalRecords || 0);
-      const totalQuantity = Number(row.totalQuantity || 0);
-      const totalFocQuantity = Number(row.totalFocQuantity || 0);
-      const totalCalculatedCifUsd = Number(row.totalCalculatedCifUsd || 0);
-      const totalCalculatedWholesaleAed = Number(row.totalCalculatedWholesaleAed || 0);
-
-      if (!channelMap.has(channelKey)) {
-        channelMap.set(channelKey, {
-          channelId,
-          channelName: row.channelName || "Unknown",
-          totalRecords: 0,
-          totalQuantity: 0,
-          totalFocQuantity: 0,
-          totalCalculatedCifUsd: 0,
-          totalCalculatedWholesaleAed: 0,
-          products: [],
-        });
-      }
-
-      const channel = channelMap.get(channelKey);
-      channel.totalRecords += totalRecords;
-      channel.totalQuantity += totalQuantity;
-      channel.totalFocQuantity += totalFocQuantity;
-      channel.totalCalculatedCifUsd += totalCalculatedCifUsd;
-      channel.totalCalculatedWholesaleAed += totalCalculatedWholesaleAed;
-      channel.products.push({
-        productId,
-        name: row.productName || "Unknown",
-        quantity: totalQuantity,
-        focQuantity: totalFocQuantity,
-        totalCalculatedCifUsd,
-        totalCalculatedWholesaleAed,
-      });
-
-      totals.totalRecords += totalRecords;
-      totals.totalQuantity += totalQuantity;
-      totals.totalFocQuantity += totalFocQuantity;
-      totals.totalCalculatedCifUsd += totalCalculatedCifUsd;
-      totals.totalCalculatedWholesaleAed += totalCalculatedWholesaleAed;
-    });
-
-    const channels = [...channelMap.values()].sort((left, right) => (
-      right.totalQuantity - left.totalQuantity || String(left.channelName).localeCompare(String(right.channelName))
-    ));
 
     return res.status(200).json({
       success: true,
       message: "Sales channel breakdown fetched successfully",
-      data: {
-        channels,
-        totals,
-      },
+      data,
     });
   } catch (error) {
     return next(error);
