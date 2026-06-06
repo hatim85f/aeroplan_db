@@ -2922,14 +2922,11 @@ router.get("/channel-breakdown", auth, loadSalesActor, async (req, res, next) =>
       return res.status(400).json({ success: false, message: "accountId must be a valid MongoDB ObjectId" });
     }
 
+    const accountObjectId = new mongoose.Types.ObjectId(req.query.accountId);
     const baseQuery = {
-      ...await buildSalesQuery({
-        year,
-        month,
-        accountId: req.query.accountId,
-      }, req.currentUser),
       year,
       month,
+      accountId: { $in: [accountObjectId, String(req.query.accountId)] },
       status: "active",
       isActive: true,
     };
