@@ -13,6 +13,7 @@ const router = express.Router();
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const FAR_FUTURE = new Date("9999-12-31T00:00:00.000Z");
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -544,14 +545,8 @@ const monthOverlapsAssignment = (assignment, month) => {
 const buildMonthlyBreakdown = (assignment, phasing) => {
   const months = (phasing.months || [])
     .filter((entry) => monthOverlapsAssignment(assignment, entry.month))
-    .sort((left, right) => left.month - right.month)
-    .map((entry) => ({
-      month: entry.month,
-      monthName: entry.monthName || MONTH_NAMES[entry.month - 1],
-      percentage: entry.percentage,
-      targetUnits: (assignment.totalTargetUnits * entry.percentage) / 100,
-      targetValue: (assignment.totalTargetValue * entry.percentage) / 100,
-    }));
+    .sort((left, right) => left.month - right.month);
+  const periodPercentageTotal = months.reduce((sum, entry) => sum + (entry.percentage || 0), 0);
 
   return {
     targetAssignmentId: assignment._id,
@@ -567,7 +562,19 @@ const buildMonthlyBreakdown = (assignment, phasing) => {
     totalTargetValue: assignment.totalTargetValue,
     currency: assignment.targetCurrency,
     targetValueBasis: assignment.targetValueBasis,
-    months,
+    months: months.map((entry) => {
+      const percentage = periodPercentageTotal > 0
+        ? ((entry.percentage || 0) / periodPercentageTotal) * 100
+        : 0;
+
+      return {
+        month: entry.month,
+        monthName: entry.monthName || MONTH_NAMES[entry.month - 1],
+        percentage,
+        targetUnits: (assignment.totalTargetUnits * percentage) / 100,
+        targetValue: (assignment.totalTargetValue * percentage) / 100,
+      };
+    }),
   };
 };
 
@@ -614,6 +621,40 @@ const assignmentOverlapsYear = (assignment, yearStart, nextYearStart) => {
     && assignmentEnd >= yearStart;
 };
 
+const getAssignmentOverlapDays = (assignment, yearStart, yearEnd) => {
+  const assignmentEnd = assignment.endDate || yearEnd;
+  const overlapStart = maxDate(assignment.startDate, yearStart);
+  const overlapEnd = minDate(assignmentEnd, yearEnd);
+
+  if (overlapEnd < overlapStart) {
+    return 0;
+  }
+
+  return Math.floor((addOneDay(overlapEnd).getTime() - overlapStart.getTime()) / MS_PER_DAY);
+};
+
+const getAssignmentKey = (assignment) => String(assignment._id);
+
+const calculateAssignmentAllocationRatios = (assignments, yearStart, yearEnd) => {
+  const weightedAssignments = assignments.map((assignment) => {
+    const accountabilityPercentage = normalizeAccountabilityPercentage(assignment.accountabilityPercentage);
+    const overlapDays = getAssignmentOverlapDays(assignment, yearStart, yearEnd);
+
+    return {
+      assignment,
+      weight: overlapDays * (accountabilityPercentage / 100),
+    };
+  });
+  const totalWeight = weightedAssignments.reduce((sum, entry) => sum + entry.weight, 0);
+  const ratios = new Map();
+
+  weightedAssignments.forEach(({ assignment, weight }) => {
+    ratios.set(getAssignmentKey(assignment), totalWeight > 0 ? weight / totalWeight : 0);
+  });
+
+  return ratios;
+};
+
 const normalizeChannelTargets = (body = {}) => {
   const source = body.channelTargets || body.targets || body.channels;
 
@@ -651,11 +692,11 @@ const normalizeAccountabilityPercentage = (value) => {
   return percentage;
 };
 
-const buildDerivedTargetPayload = ({ actor, rep, product, channelPricing, channel, assignment, year, yearStart, yearEnd, units, notes }) => {
+const buildDerivedTargetPayload = ({ actor, rep, product, channelPricing, channel, assignment, year, yearStart, yearEnd, units, allocationRatio, notes }) => {
   const startDate = maxDate(assignment.startDate, yearStart);
   const endDate = minDate(assignment.endDate || yearEnd, yearEnd);
   const accountabilityPercentage = normalizeAccountabilityPercentage(assignment.accountabilityPercentage);
-  const assignedUnits = (units * accountabilityPercentage) / 100;
+  const assignedUnits = units * allocationRatio;
   const targetValueBasis = channelPricing.targetValueBasis || "cifUsd";
   const targetCurrency = channelPricing.targetCurrency || getDefaultTargetCurrency(targetValueBasis);
   const unitValue = Number(channelPricing[targetValueBasis]) || 0;
@@ -760,6 +801,8 @@ const createTargetsFromProductAssignments = async (req, res, next) => {
     const accessibleRepIds = await getAccessibleRepIds(req.currentUser);
     const channelsById = new Map(channels.map((channel) => [String(channel._id), channel]));
     const pricingByChannelId = new Map((product.channelPricing || []).map((pricing) => [String(pricing.channelId), pricing]));
+    const matchingAssignmentsByRepId = new Map();
+    const allMatchingAssignments = [];
     const createdIds = [];
     const updatedIds = [];
     const failed = [];
@@ -773,6 +816,19 @@ const createTargetsFromProductAssignments = async (req, res, next) => {
         String(assignment.productId) === productId
           && assignmentOverlapsYear(assignment, yearStart, nextYearStart)
       ));
+
+      matchingAssignmentsByRepId.set(String(rep._id), matchingAssignments);
+      allMatchingAssignments.push(...matchingAssignments);
+    }
+
+    const allocationRatios = calculateAssignmentAllocationRatios(allMatchingAssignments, yearStart, yearEnd);
+
+    for (const rep of reps) {
+      if (accessibleRepIds && !accessibleRepIds.includes(String(rep._id))) {
+        continue;
+      }
+
+      const matchingAssignments = matchingAssignmentsByRepId.get(String(rep._id)) || [];
 
       for (const productAssignment of matchingAssignments) {
         for (const channelTarget of channelTargets) {
@@ -799,6 +855,7 @@ const createTargetsFromProductAssignments = async (req, res, next) => {
               yearStart,
               yearEnd,
               units: channelTarget.totalTargetUnits,
+              allocationRatio: allocationRatios.get(getAssignmentKey(productAssignment)) || 0,
               notes: channelTarget.notes ?? req.body.notes,
             });
             const result = await upsertDerivedTarget(payload, req.currentUser);

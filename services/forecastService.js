@@ -180,50 +180,41 @@ const assertCanMutateForecast = async (actor, forecast) => {
   }
 };
 
-const findDefaultPhasing = async (assignment) => {
-  const base = {
-    year: assignment.year,
-    status: "active",
-    isActive: true,
-    isDefault: true,
-  };
+const idsMatch = (left, right) => String(left || "") === String(right || "");
 
-  const withScope = (scope = {}) => {
-    const query = { ...base };
+const phasingMatchesScope = (phasing, scope) => Object.entries(scope).every(([key, value]) => {
+  if (value === undefined || value === null || value === "") {
+    return true;
+  }
 
-    Object.entries(scope).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== "") {
-        query[key] = value;
-      }
-    });
+  return idsMatch(phasing[key], value);
+});
 
-    return query;
-  };
-
-  const scopeQueries = [
-    withScope({
+const getDefaultPhasingScopes = (assignment) => [
+  {
       teamId: assignment.teamId,
       lineId: assignment.lineId,
       productId: assignment.productId,
       channelId: assignment.channelId,
-    }),
-    withScope({
+  },
+  {
       lineId: assignment.lineId,
       productId: assignment.productId,
       channelId: assignment.channelId,
-    }),
-    withScope({
+  },
+  {
       teamId: assignment.teamId,
       lineId: assignment.lineId,
-    }),
-    withScope({
+  },
+  {
       lineId: assignment.lineId,
-    }),
-    base,
-  ];
+  },
+  {},
+];
 
-  for (const query of scopeQueries) {
-    const phasing = await TargetPhasing.findOne(query).sort({ createdAt: -1 }).lean();
+const findDefaultPhasing = (assignment, defaultPhasings) => {
+  for (const scope of getDefaultPhasingScopes(assignment)) {
+    const phasing = defaultPhasings.find((entry) => phasingMatchesScope(entry, scope));
 
     if (phasing) {
       return phasing;
@@ -233,8 +224,8 @@ const findDefaultPhasing = async (assignment) => {
   return null;
 };
 
-const calculateMonthlyTarget = async (assignment, month) => {
-  const phasing = await findDefaultPhasing(assignment);
+const calculateMonthlyTarget = (assignment, month, defaultPhasings) => {
+  const phasing = findDefaultPhasing(assignment, defaultPhasings);
 
   if (!phasing) {
     return {
@@ -367,19 +358,27 @@ const serializeForecast = (forecast) => {
 const buildForecastBase = async ({ actor, userId, year, month, existingForecast }) => {
   const rep = await loadRepForActor(actor, userId);
   const { monthStart, nextMonthStart } = monthBounds(year, month);
-  const assignments = await TargetAssignment.find({
-    userId: rep._id,
-    year,
-    status: "active",
-    isActive: true,
-    startDate: { $lt: nextMonthStart },
-    endDate: { $gte: monthStart },
-  }).sort({ productName: 1, channelName: 1 }).lean();
+  const [assignments, defaultPhasings] = await Promise.all([
+    TargetAssignment.find({
+      userId: rep._id,
+      year,
+      status: "active",
+      isActive: true,
+      startDate: { $lt: nextMonthStart },
+      endDate: { $gte: monthStart },
+    }).sort({ productName: 1, channelName: 1 }).lean(),
+    TargetPhasing.find({
+      year,
+      status: "active",
+      isActive: true,
+      isDefault: true,
+    }).sort({ createdAt: -1 }).lean(),
+  ]);
   const preservedAccountForecasts = getPreservedAccountForecasts(existingForecast);
   const itemsByProductId = new Map();
 
   for (const assignment of assignments) {
-    const monthlyTarget = await calculateMonthlyTarget(assignment, month);
+    const monthlyTarget = calculateMonthlyTarget(assignment, month, defaultPhasings);
     const productKey = String(assignment.productId);
     const channelKey = `${productKey}:${String(assignment.channelId)}:${String(assignment._id)}`;
 
@@ -477,8 +476,18 @@ const buildOrRefreshMonthlyForecast = async ({ actor, userId, year, month, prese
 };
 
 const getMyForecast = async ({ actor, year, month }) => {
+  if (actor.role !== "representative") {
+    throw makeError("GET /api/forecasts/my is for medical reps. Managers and admins should use /api/forecasts/team.", 400);
+  }
+
   const period = normalizePeriod({ year, month });
-  const forecast = await buildOrRefreshMonthlyForecast({
+  const existingForecast = await ForecastMonth.findOne({
+    userId: actor._id,
+    year: period.year,
+    month: period.month,
+    isActive: true,
+  });
+  const forecast = existingForecast || await buildOrRefreshMonthlyForecast({
     actor,
     userId: actor._id,
     ...period,
@@ -532,10 +541,17 @@ const summarizeTeamForecasts = async ({ actor, year, month, userId }) => {
     repIds = assignments.map((id) => String(id));
   }
 
+  const existingForecasts = await ForecastMonth.find({
+    userId: { $in: repIds },
+    year: period.year,
+    month: period.month,
+    isActive: true,
+  });
+  const existingByRepId = new Map(existingForecasts.map((forecast) => [String(forecast.userId), forecast]));
   const forecasts = [];
 
   for (const repId of repIds) {
-    const forecast = await buildOrRefreshMonthlyForecast({
+    const forecast = existingByRepId.get(String(repId)) || await buildOrRefreshMonthlyForecast({
       actor,
       userId: repId,
       ...period,
