@@ -202,7 +202,7 @@ const parseExcelSerialDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const parseDate = (value, fieldName = "date") => {
+const parseDate = (value, fieldName = "date", options = {}) => {
   if (value === undefined || value === null || value === "") {
     return null;
   }
@@ -232,8 +232,10 @@ const parseDate = (value, fieldName = "date") => {
     const year = Number(yearPart.length === 2 ? `20${yearPart}` : yearPart);
     const first = Number(firstPart);
     const second = Number(secondPart);
-    const day = first > 12 ? first : second;
-    const month = first > 12 ? second : first;
+    const isAmbiguous = first <= 12 && second <= 12;
+    const useDayFirst = first > 12 || (isAmbiguous && options.preferDayFirst);
+    const day = useDayFirst ? first : second;
+    const month = useDayFirst ? second : first;
 
     return new Date(Date.UTC(year, month - 1, day));
   }
@@ -247,6 +249,33 @@ const parseDate = (value, fieldName = "date") => {
   }
 
   return date;
+};
+
+const getSalesRecordEffectiveDate = (record) => {
+  if (!record?.salesDate) return null;
+
+  const salesDate = new Date(record.salesDate);
+
+  if (Number.isNaN(salesDate.getTime())) return null;
+
+  const month = Number(record.month);
+  const year = Number(record.year);
+
+  if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
+    return salesDate;
+  }
+
+  const storedMonth = salesDate.getUTCMonth() + 1;
+  const storedDay = salesDate.getUTCDate();
+
+  // Existing UAE sales uploads may have parsed DD/MM/YYYY as MM/DD/YYYY.
+  // If the uploaded month disagrees with salesDate but the stored day equals
+  // the uploaded month, treat the stored month as the intended day.
+  if (storedMonth !== month && storedDay === month && storedMonth >= 1 && storedMonth <= 31) {
+    return new Date(Date.UTC(year, month - 1, storedMonth));
+  }
+
+  return salesDate;
 };
 
 const getCurrentUser = async (req) => User.findById(req.user.id);
@@ -515,14 +544,14 @@ const normalizeUploadColumnMapping = (body = {}, mapping = null) => {
 const normalizeSalesRow = (row = {}, columnMapping = {}, fallback = {}) => {
   const month = parseNumber(getMappedValue(row, "month", columnMapping), fallback.month);
   const year = parseNumber(getMappedValue(row, "year", columnMapping), fallback.year);
-  const salesDate = parseDate(getMappedValue(row, "salesDate", columnMapping), "salesDate")
+  const salesDate = parseDate(getMappedValue(row, "salesDate", columnMapping), "salesDate", { preferDayFirst: true })
     || (month && year ? new Date(Date.UTC(year, month - 1, 1)) : null);
 
   return {
     invoiceNumber: getMappedValue(row, "invoiceNumber", columnMapping),
     externalSalesReference: getMappedValue(row, "externalSalesReference", columnMapping),
     salesDate,
-    invoiceDate: parseDate(getMappedValue(row, "invoiceDate", columnMapping), "invoiceDate"),
+    invoiceDate: parseDate(getMappedValue(row, "invoiceDate", columnMapping), "invoiceDate", { preferDayFirst: true }),
     month,
     year,
     accountName: getMappedValue(row, "accountName", columnMapping),
@@ -2283,7 +2312,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
       return res.status(400).json({ success: false, message: "accountId must be a valid MongoDB ObjectId" });
     }
 
-    const salesDate = parseDate(req.body.salesDate, "salesDate");
+    const salesDate = parseDate(req.body.salesDate, "salesDate", { preferDayFirst: true });
 
     if (!salesDate) {
       return res.status(400).json({ success: false, message: "salesDate is required" });
@@ -2412,7 +2441,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
           externalSalesReference: item.externalSalesReference || req.body.externalSalesReference,
           rowNumber,
           salesDate,
-          invoiceDate: parseDate(item.invoiceDate || req.body.invoiceDate, "invoiceDate"),
+          invoiceDate: parseDate(item.invoiceDate || req.body.invoiceDate, "invoiceDate", { preferDayFirst: true }),
           month: Number(req.body.month),
           year: Number(req.body.year),
           uploadDate: new Date(),
@@ -2558,7 +2587,10 @@ const matchSalesRecordsToOrders = async (records, actorId) => {
   // Load candidate orders ONCE and match in memory — a per-record Order.find
   // loop exceeded the Heroku 30s router timeout on large datasets.
   const salesTimes = candidates
-    .map((record) => (record.salesDate ? new Date(record.salesDate).getTime() : 0))
+    .map((record) => {
+      const effectiveDate = getSalesRecordEffectiveDate(record);
+      return effectiveDate ? effectiveDate.getTime() : 0;
+    })
     .filter(Boolean);
   const minDate = new Date(Math.min(...salesTimes) - 30 * DAY_MS);
   const maxDate = new Date(Math.max(...salesTimes) + 30 * DAY_MS);
@@ -2580,11 +2612,33 @@ const matchSalesRecordsToOrders = async (records, actorId) => {
   });
 
   for (const record of candidates) {
-    const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+    const recordQuantity = Number(record.quantity || 0);
+    const recordFreeQuantity = Number(record.freeQuantity || 0);
+
+    if (recordQuantity === 0 && recordFreeQuantity !== 0) {
+      needsReview.push({
+        salesRecordId: record._id,
+        invoiceNumber: record.invoiceNumber,
+        accountName: record.accountName,
+        productName: record.productName,
+        productNickname: record.productNickname,
+        channelName: record.channelName,
+        quantity: record.quantity,
+        freeQuantity: record.freeQuantity,
+        candidateOrdersCount: 0,
+        reason: "FOC-only sales row is not used to match an order",
+      });
+      continue;
+    }
+
+    const effectiveDate = getSalesRecordEffectiveDate(record);
+    const salesTime = effectiveDate ? effectiveDate.getTime() : 0;
     const key = `${String(record.accountId)}:${String(record.channelId)}:${String(record.productId)}`;
     const pool = (ordersByKey.get(key) || []).filter((order) => {
       const orderTime = order.orderDate ? new Date(order.orderDate).getTime() : 0;
       if (Math.abs(orderTime - salesTime) > 30 * DAY_MS) return false;
+      const matchingItem = (order.items || []).find((entry) => String(entry.productId) === String(record.productId));
+      if (!matchingItem || Number(matchingItem.quantity) !== recordQuantity) return false;
       if (record.invoiceNumber) {
         return order.invoiceNumber === record.invoiceNumber
           || order.salesSheetReference === record.invoiceNumber
@@ -2757,7 +2811,8 @@ const matchSalesRecordsToTargets = async (records, actorId) => {
 
   for (const record of records) {
     const key = `${String(record.productId)}:${String(record.channelId)}`;
-    const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+    const effectiveDate = getSalesRecordEffectiveDate(record);
+    const salesTime = effectiveDate ? effectiveDate.getTime() : 0;
     const accountRepIds = assignedRepIdsByAccount.get(String(record.accountId)) || [];
     const assignments = (assignmentsByProductChannel.get(key) || []).filter((assignment) => (
       new Date(assignment.startDate).getTime() <= salesTime
@@ -3887,11 +3942,11 @@ router.patch("/:id", auth, loadSalesActor, requireManager, async (req, res, next
     });
 
     if (update.salesDate) {
-      update.salesDate = parseDate(update.salesDate, "salesDate");
+      update.salesDate = parseDate(update.salesDate, "salesDate", { preferDayFirst: true });
     }
 
     if (update.invoiceDate) {
-      update.invoiceDate = parseDate(update.invoiceDate, "invoiceDate");
+      update.invoiceDate = parseDate(update.invoiceDate, "invoiceDate", { preferDayFirst: true });
     }
 
     if (update.matchStatus && !MATCH_STATUSES.includes(update.matchStatus)) {
