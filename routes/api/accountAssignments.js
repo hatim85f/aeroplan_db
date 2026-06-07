@@ -77,6 +77,31 @@ router.get("/", auth, loadActor, requireManager, async (req, res, next) => {
   }
 });
 
+// All representative users in the manager's scope, INCLUDING inactive ones —
+// historical coverage must reference reps who have since left.
+router.get("/reps", auth, loadActor, requireManager, async (req, res, next) => {
+  try {
+    const query = { role: "representative" };
+
+    if (req.currentUser.role !== "admin") {
+      query.$or = [{ _id: req.currentUser._id }, { path: req.currentUser._id }];
+    }
+
+    const reps = await User.find(query)
+      .select("_id fullName userName email status isActive")
+      .sort({ fullName: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      message: "Reps fetched successfully",
+      data: reps,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // Bulk create: accountIds × userIds for a date range
 router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {

@@ -386,7 +386,19 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
       userName: node.userName,
       ...finalizeBucket(node),
     }))
+    // Hide reps with neither target nor sales in the whole YTD window.
+    .filter((rep) => rep.ytdTargetValue > 0 || rep.ytdSalesValue > 0 || rep.ytdTargetUnits > 0 || rep.ytdSalesUnits > 0)
     .sort((left, right) => right.ytdAchievementPercentage - left.ytdAchievementPercentage);
+
+  // Sales counted in team totals that no rep was credited with (no manual
+  // attribution, no dated coverage, no static account assignment). Helps
+  // explain reps showing 0% — the coverage history simply isn't entered yet.
+  const repSalesValue = reps.reduce((sum, rep) => sum + rep.ytdSalesValue, 0);
+  const repMonthlySalesValue = reps.reduce((sum, rep) => sum + rep.monthlySalesValue, 0);
+  const unattributed = {
+    ytdSalesValue: Math.max(round2(round2(totals.ytdSalesValue) - round2(repSalesValue)), 0),
+    monthlySalesValue: Math.max(round2(round2(totals.monthlySalesValue) - round2(repMonthlySalesValue)), 0),
+  };
 
   return {
     year,
@@ -394,6 +406,7 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
     scope,
     repsCount: reps.length,
     summaryCards: finalizeBucket(totals),
+    unattributed,
     products,
     reps,
   };
