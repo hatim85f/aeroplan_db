@@ -150,7 +150,7 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
       isActive: true,
       isDefault: true,
     }).sort({ createdAt: -1 }).lean(),
-    User.find({ _id: { $in: repIds } }).select("_id fullName userName email").lean(),
+    User.find({ _id: { $in: repIds } }).select("_id fullName userName email status isActive").lean(),
     Account.find({ assignedMedicalRepIds: { $in: repIds } }).select("_id assignedMedicalRepIds").lean(),
     // ALL dated coverage (not just scope reps): the existence of any history
     // on an account disables the legacy static fallback for that account.
@@ -167,6 +167,19 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
 
   const repSet = new Set(repIds);
   const repNames = new Map(repUsers.map((user) => [String(user._id), getRepDisplayName(user)]));
+
+  // Active reps only are listed in the response (historical/inactive reps'
+  // sales still count toward team totals and the equal-split denominators).
+  const activeRepIds = new Set(repUsers
+    .filter((user) => user.isActive !== false && (!user.status || String(user.status).toLowerCase() === "active"))
+    .map((user) => String(user._id)));
+
+  // A rep is only credited with a sale when BOTH the account is theirs for
+  // that date AND the item (product+channel) is assigned to them.
+  const repItemKeys = new Set(assignments.map((assignment) =>
+    `${String(assignment.userId)}:${String(assignment.productId)}:${String(assignment.channelId)}`));
+  const hasItemAssigned = (repId, record) =>
+    repItemKeys.has(`${repId}:${String(record.productId)}:${String(record.channelId)}`);
 
   // accountId -> ALL statically assigned reps (legacy fallback). Kept
   // unfiltered so equal-split shares stay consistent across scopes.
@@ -204,8 +217,6 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
 
     if (history.length) {
       const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
-      // Count ALL covering reps (even outside scope) so the split is correct,
-      // then return only the in-scope shares.
       const coveringAll = [...new Set(history
         .filter((entry) => (
           new Date(entry.startDate).getTime() <= salesTime
@@ -213,18 +224,24 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
         ))
         .map((entry) => String(entry.userId)))];
 
-      if (!coveringAll.length) return [];
+      // Only reps who ALSO carry the item (product+channel assignment) are
+      // eligible; out-of-scope covering reps are kept in the denominator
+      // conservatively since their assignments are not loaded.
+      const eligible = coveringAll.filter((repId) => !repSet.has(repId) || hasItemAssigned(repId, record));
+
+      if (!eligible.length) return [];
 
       // Joint responsibility = equal split, so a sale is never counted twice.
-      const share = 1 / coveringAll.length;
-      return coveringAll
+      const share = 1 / eligible.length;
+      return eligible
         .filter((repId) => repSet.has(repId))
         .map((repId) => ({ repId, share }));
     }
 
     const staticReps = accountReps.get(String(record.accountId)) || [];
-    const share = staticReps.length ? 1 / staticReps.length : 0;
-    return staticReps
+    const staticEligible = staticReps.filter((repId) => !repSet.has(repId) || hasItemAssigned(repId, record));
+    const share = staticEligible.length ? 1 / staticEligible.length : 0;
+    return staticEligible
       .filter((repId) => repSet.has(repId))
       .map((repId) => ({ repId, share }));
   };
@@ -418,15 +435,19 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
       userName: node.userName,
       ...finalizeBucket(node),
     }))
-    // Hide reps with neither target nor sales in the whole YTD window.
+    // Hide reps with neither target nor sales in the whole YTD window,
+    // and hide inactive reps entirely.
+    .filter((rep) => activeRepIds.has(rep.userId))
     .filter((rep) => rep.ytdTargetValue > 0 || rep.ytdSalesValue > 0 || rep.ytdTargetUnits > 0 || rep.ytdSalesUnits > 0)
     .sort((left, right) => right.ytdAchievementPercentage - left.ytdAchievementPercentage);
 
   // Sales counted in team totals that no rep was credited with (no manual
   // attribution, no dated coverage, no static account assignment). Helps
   // explain reps showing 0% — the coverage history simply isn't entered yet.
-  const repSalesValue = reps.reduce((sum, rep) => sum + rep.ytdSalesValue, 0);
-  const repMonthlySalesValue = reps.reduce((sum, rep) => sum + rep.monthlySalesValue, 0);
+  // Computed over ALL rep nodes (including hidden/inactive reps) so sales
+  // credited to a leaver are not misreported as "unattributed".
+  const repSalesValue = [...repNodes.values()].reduce((sum, node) => sum + node.ytdSalesValue, 0);
+  const repMonthlySalesValue = [...repNodes.values()].reduce((sum, node) => sum + node.monthlySalesValue, 0);
   const unattributed = {
     ytdSalesValue: Math.max(round2(round2(totals.ytdSalesValue) - round2(repSalesValue)), 0),
     monthlySalesValue: Math.max(round2(round2(totals.monthlySalesValue) - round2(repMonthlySalesValue)), 0),
