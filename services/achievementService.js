@@ -136,8 +136,8 @@ const resolveRepIds = async (actor, userId) => {
  * Everything is bulk-loaded (assignments, phasings, accounts, sales) and
  * aggregated in memory so the endpoint stays well under the Heroku timeout.
  */
-const computeAchievement = async ({ repIds, year, month, scope }) => {
-  const [assignments, defaultPhasings, repUsers, accounts, datedAssignments] = await Promise.all([
+const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] }) => {
+  let [assignments, defaultPhasings, repUsers, accounts, datedAssignments] = await Promise.all([
     TargetAssignment.find({
       userId: { $in: repIds },
       year,
@@ -152,19 +152,29 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
     }).sort({ createdAt: -1 }).lean(),
     User.find({ _id: { $in: repIds } }).select("_id fullName userName email").lean(),
     Account.find({ assignedMedicalRepIds: { $in: repIds } }).select("_id assignedMedicalRepIds").lean(),
-    AccountRepAssignment.find({ userId: { $in: repIds }, isActive: true })
+    // ALL dated coverage (not just scope reps): the existence of any history
+    // on an account disables the legacy static fallback for that account.
+    AccountRepAssignment.find({ isActive: true })
       .select("accountId userId startDate endDate").lean(),
   ]);
+
+  // Optional sales-channel filter: limiting the target assignments naturally
+  // limits the sales counted, since only targeted product+channel combos count.
+  if (channelIds.length) {
+    const channelSet = new Set(channelIds.map(String));
+    assignments = assignments.filter((assignment) => channelSet.has(String(assignment.channelId)));
+  }
 
   const repSet = new Set(repIds);
   const repNames = new Map(repUsers.map((user) => [String(user._id), getRepDisplayName(user)]));
 
-  // accountId -> reps in scope statically assigned (legacy fallback).
+  // accountId -> ALL statically assigned reps (legacy fallback). Kept
+  // unfiltered so equal-split shares stay consistent across scopes.
   const accountReps = new Map();
   accounts.forEach((account) => {
     accountReps.set(
       String(account._id),
-      (account.assignedMedicalRepIds || []).map(String).filter((id) => repSet.has(id)),
+      (account.assignedMedicalRepIds || []).map(String),
     );
   });
 
@@ -180,23 +190,43 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
   // Rep credit for one sales record, in priority order:
   // 1. manual repAttributions on the record (percentage shares)
   // 2. dated AccountRepAssignment covering the record's salesDate (full credit)
-  // 3. legacy Account.assignedMedicalRepIds (full credit)
+  // 3. legacy Account.assignedMedicalRepIds — ONLY when the account has no
+  //    dated coverage history at all. Once history exists for an account, the
+  //    dates are the single source of truth (a sale outside every covered
+  //    period is unattributed, not silently given to the static assignee).
   const resolveRepShares = (record) => {
     const manual = (record.repAttributions || []).filter((entry) => repSet.has(String(entry.userId)));
     if (manual.length) {
       return manual.map((entry) => ({ repId: String(entry.userId), share: (Number(entry.percentage) || 0) / 100 }));
     }
 
-    const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
-    const dated = (datedByAccount.get(String(record.accountId)) || []).filter((entry) => (
-      new Date(entry.startDate).getTime() <= salesTime
-      && (!entry.endDate || new Date(entry.endDate).getTime() >= salesTime)
-    ));
-    if (dated.length) {
-      return [...new Set(dated.map((entry) => String(entry.userId)))].map((repId) => ({ repId, share: 1 }));
+    const history = datedByAccount.get(String(record.accountId)) || [];
+
+    if (history.length) {
+      const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+      // Count ALL covering reps (even outside scope) so the split is correct,
+      // then return only the in-scope shares.
+      const coveringAll = [...new Set(history
+        .filter((entry) => (
+          new Date(entry.startDate).getTime() <= salesTime
+          && (!entry.endDate || new Date(entry.endDate).getTime() >= salesTime)
+        ))
+        .map((entry) => String(entry.userId)))];
+
+      if (!coveringAll.length) return [];
+
+      // Joint responsibility = equal split, so a sale is never counted twice.
+      const share = 1 / coveringAll.length;
+      return coveringAll
+        .filter((repId) => repSet.has(repId))
+        .map((repId) => ({ repId, share }));
     }
 
-    return (accountReps.get(String(record.accountId)) || []).map((repId) => ({ repId, share: 1 }));
+    const staticReps = accountReps.get(String(record.accountId)) || [];
+    const share = staticReps.length ? 1 / staticReps.length : 0;
+    return staticReps
+      .filter((repId) => repSet.has(repId))
+      .map((repId) => ({ repId, share }));
   };
 
   // ── Aggregation nodes ──
@@ -282,7 +312,9 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
 
   if (singleRepScope) {
     const repAccountIds = new Set(accounts.map((account) => String(account._id)));
-    datedAssignments.forEach((entry) => repAccountIds.add(String(entry.accountId)));
+    datedAssignments
+      .filter((entry) => repSet.has(String(entry.userId)))
+      .forEach((entry) => repAccountIds.add(String(entry.accountId)));
 
     salesQuery.$or = [
       { accountId: { $in: [...repAccountIds] } },
@@ -412,7 +444,15 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
   };
 };
 
-const getMyAchievement = async ({ actor, year, month }) => {
+const parseChannelIds = (value) => {
+  if (!value) return [];
+  return String(value)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && isValidObjectId(entry));
+};
+
+const getMyAchievement = async ({ actor, year, month, channelIds }) => {
   if (actor.role !== "representative") {
     throw makeError("GET /api/achievements/my is for medical reps. Managers and admins should use /api/achievements/team.", 400);
   }
@@ -422,10 +462,11 @@ const getMyAchievement = async ({ actor, year, month }) => {
     year: normalizeYear(year),
     month: normalizeMonth(month),
     scope: "my",
+    channelIds: parseChannelIds(channelIds),
   });
 };
 
-const getTeamAchievement = async ({ actor, year, month, userId }) => {
+const getTeamAchievement = async ({ actor, year, month, userId, channelIds }) => {
   if (!isManagerRole(actor.role)) {
     throw makeError("Only managers can view team achievement", 403);
   }
@@ -437,6 +478,7 @@ const getTeamAchievement = async ({ actor, year, month, userId }) => {
     year: normalizeYear(year),
     month: normalizeMonth(month),
     scope: "team",
+    channelIds: parseChannelIds(channelIds),
   });
 };
 

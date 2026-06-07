@@ -16,6 +16,7 @@ const getMyAchievement = async (req, res, next) => {
       actor: req.currentUser,
       year: req.query.year,
       month: req.query.month,
+      channelIds: req.query.channelIds,
     });
 
     return res.status(200).json({
@@ -35,6 +36,7 @@ const getTeamAchievement = async (req, res, next) => {
       year: req.query.year,
       month: req.query.month,
       userId: req.query.userId,
+      channelIds: req.query.channelIds,
     });
 
     return res.status(200).json({
