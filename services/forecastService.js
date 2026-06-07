@@ -881,15 +881,68 @@ const updateForecastStatus = async ({ actor, forecastId, forecastStatus }) => {
 
 const refreshForecast = async ({ actor, year, month, userId }) => {
   const period = normalizePeriod({ year, month });
-  const targetUserId = userId || actor._id;
 
-  const forecast = await buildOrRefreshMonthlyForecast({
-    actor,
-    userId: targetUserId,
-    ...period,
-  });
+  if (userId) {
+    const forecast = await buildOrRefreshMonthlyForecast({
+      actor,
+      userId,
+      ...period,
+    });
 
-  return serializeForecast(forecast);
+    return serializeForecast(forecast);
+  }
+
+  if (!isManagerRole(actor.role)) {
+    const forecast = await buildOrRefreshMonthlyForecast({
+      actor,
+      userId: actor._id,
+      ...period,
+    });
+
+    return serializeForecast(forecast);
+  }
+
+  const accessibleRepIds = await getAccessibleRepIds(actor);
+  let repIds = accessibleRepIds;
+
+  if (!repIds) {
+    const { monthStart, nextMonthStart } = monthBounds(period.year, period.month);
+    const assignmentRepIds = await TargetAssignment.find({
+      year: period.year,
+      status: "active",
+      isActive: true,
+      startDate: { $lt: nextMonthStart },
+      endDate: { $gte: monthStart },
+    }).distinct("userId");
+    repIds = await getActiveRepIds(assignmentRepIds.map((id) => String(id)));
+  }
+
+  const refreshed = [];
+
+  for (const repId of repIds) {
+    const forecast = await buildOrRefreshMonthlyForecast({
+      actor,
+      userId: repId,
+      ...period,
+    });
+    const data = serializeForecast(forecast);
+
+    refreshed.push({
+      forecastId: data._id,
+      userId: data.userId,
+      userName: data.userName,
+      totalMonthlyTargetValue: data.totalMonthlyTargetValue,
+      totalMonthlyTargetUnits: data.totalMonthlyTargetUnits,
+      itemsCount: (data.items || []).length,
+    });
+  }
+
+  return {
+    year: period.year,
+    month: period.month,
+    refreshedCount: refreshed.length,
+    refreshed,
+  };
 };
 
 module.exports = {
