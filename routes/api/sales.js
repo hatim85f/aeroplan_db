@@ -2743,6 +2743,11 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
 
     const user = req.currentUser;
     const { year, month, includeMatched } = req.body || {};
+    const validationError = validateMonthYear(month, year);
+
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
 
     startMatchJob("orders", async () => {
       const query = {
@@ -2755,8 +2760,8 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
         ...await getAccessibleSalesQuery(user),
       };
 
-      if (year) query.year = Number(year);
-      if (month) query.month = Number(month);
+      query.year = Number(year);
+      query.month = Number(month);
 
       const totalEligibleCount = await SalesRecord.countDocuments(query);
       const records = await SalesRecord.find(query)
@@ -2922,6 +2927,11 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
 
     const user = req.currentUser;
     const { year, month } = req.body || {};
+    const validationError = validateMonthYear(month, year);
+
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
 
     startMatchJob("targets", async () => {
       const query = {
@@ -2932,8 +2942,8 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
         ...await getAccessibleSalesQuery(user),
       };
 
-      if (year) query.year = Number(year);
-      if (month) query.month = Number(month);
+      query.year = Number(year);
+      query.month = Number(month);
 
       const totalEligibleCount = await SalesRecord.countDocuments(query);
       const records = await SalesRecord.find(query)
