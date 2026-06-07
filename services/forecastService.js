@@ -119,12 +119,28 @@ const getAccessibleRepIds = async (actor) => {
       { path: actor._id },
     ],
     role: "representative",
+    status: "active",
   }).select("_id").lean();
 
   return reps.map((rep) => String(rep._id));
 };
 
-const loadRepForActor = async (actor, userId) => {
+const getActiveRepIds = async (repIds) => {
+  const query = {
+    role: "representative",
+    status: "active",
+  };
+
+  if (Array.isArray(repIds)) {
+    query._id = { $in: repIds };
+  }
+
+  const reps = await User.find(query).select("_id").lean();
+
+  return reps.map((rep) => String(rep._id));
+};
+
+const loadRepForActor = async (actor, userId, { requireActive = false } = {}) => {
   validateObjectId(userId, "userId");
 
   const rep = await User.findById(userId).select("_id fullName userName email role status managerId teamId lineId path").lean();
@@ -135,6 +151,10 @@ const loadRepForActor = async (actor, userId) => {
 
   if (rep.role !== "representative") {
     throw makeError("userId must belong to a representative user", 400);
+  }
+
+  if (requireActive && rep.status !== "active") {
+    throw makeError("Medical rep is inactive", 404);
   }
 
   if (!canAccessUser(actor, rep)) {
@@ -525,7 +545,7 @@ const summarizeTeamForecasts = async ({ actor, year, month, userId }) => {
   let repIds;
 
   if (userId) {
-    const rep = await loadRepForActor(actor, userId);
+    const rep = await loadRepForActor(actor, userId, { requireActive: true });
     repIds = [String(rep._id)];
   } else if (accessibleRepIds) {
     repIds = accessibleRepIds;
@@ -538,7 +558,7 @@ const summarizeTeamForecasts = async ({ actor, year, month, userId }) => {
       startDate: { $lt: nextMonthStart },
       endDate: { $gte: monthStart },
     }).distinct("userId");
-    repIds = assignments.map((id) => String(id));
+    repIds = await getActiveRepIds(assignments.map((id) => String(id)));
   }
 
   const existingForecasts = await ForecastMonth.find({
