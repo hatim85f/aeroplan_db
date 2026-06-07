@@ -2878,9 +2878,39 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
           totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
           totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
+          value: { $sum: "$targetCalculatedValue" },
+          currencies: { $addToSet: "$targetCurrency" },
           recordsCount: { $sum: 1 },
         },
       },
+      {
+        $set: {
+          currencies: {
+            $filter: {
+              input: "$currencies",
+              as: "currency",
+              cond: {
+                $and: [
+                  { $ne: ["$$currency", null] },
+                  { $ne: ["$$currency", ""] },
+                ],
+              },
+            },
+          },
+        },
+      },
+      {
+        $set: {
+          currency: {
+            $cond: [
+              { $eq: [{ $size: "$currencies" }, 1] },
+              { $first: "$currencies" },
+              "MIXED",
+            ],
+          },
+        },
+      },
+      { $project: { currencies: 0 } },
       { $sort: { totalQuantity: -1 } },
       { $limit: 50 },
     ]);
@@ -2897,6 +2927,8 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
           totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
           totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
+          value: { $sum: "$targetCalculatedValue" },
+          currencies: { $addToSet: "$targetCurrency" },
           recordsCount: { $sum: 1 },
         },
       },
@@ -2914,6 +2946,18 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
               },
             },
           },
+          currencies: {
+            $filter: {
+              input: "$currencies",
+              as: "currency",
+              cond: {
+                $and: [
+                  { $ne: ["$$currency", null] },
+                  { $ne: ["$$currency", ""] },
+                ],
+              },
+            },
+          },
         },
       },
       {
@@ -2925,9 +2969,17 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
               null,
             ],
           },
+          currency: {
+            $cond: [
+              { $eq: [{ $size: "$currencies" }, 1] },
+              { $first: "$currencies" },
+              "MIXED",
+            ],
+          },
         },
       },
-      { $sort: { totalTargetCalculatedValue: -1 } },
+      { $project: { currencies: 0 } },
+      { $sort: { value: -1 } },
       { $limit: 50 },
     ];
 
