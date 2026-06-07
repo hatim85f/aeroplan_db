@@ -182,7 +182,9 @@ const parseNumber = (value, defaultValue = 0) => {
     return defaultValue;
   }
 
-  const number = Number(value);
+  // Tolerate formatted sheet values like "1,160" or " 75 " that would
+  // otherwise become NaN and silently fall back to the default.
+  const number = typeof value === "number" ? value : Number(String(value).replace(/[,\s]/g, ""));
   return Number.isFinite(number) ? number : defaultValue;
 };
 
@@ -2518,47 +2520,95 @@ router.post("/recalculate-shared-sales", auth, loadSalesActor, requireManager, a
   }
 });
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// In-memory match job tracker: matching runs in the background so the HTTP
+// response returns instantly (Heroku kills any request that exceeds 30s).
+const matchJobs = { orders: null, targets: null };
+
+const startMatchJob = (type, runner) => {
+  matchJobs[type] = {
+    type,
+    status: "running",
+    startedAt: new Date(),
+    finishedAt: null,
+    result: null,
+    error: null,
+  };
+
+  setImmediate(async () => {
+    try {
+      const result = await runner();
+      matchJobs[type] = { ...matchJobs[type], status: "done", finishedAt: new Date(), result };
+    } catch (error) {
+      console.error(`Match job "${type}" failed`, error);
+      matchJobs[type] = { ...matchJobs[type], status: "failed", finishedAt: new Date(), error: error.message };
+    }
+  });
+};
+
 const matchSalesRecordsToOrders = async (records, actorId) => {
   const matched = [];
   const needsReview = [];
+  const candidates = records.filter((record) => record.accountId && record.productId && record.channelId);
 
-  for (const record of records) {
-    if (!record.accountId || !record.productId || !record.channelId) continue;
+  if (!candidates.length) return { matched, needsReview };
 
-    const dateFrom = new Date(record.salesDate);
-    dateFrom.setUTCDate(dateFrom.getUTCDate() - 30);
-    const dateTo = new Date(record.salesDate);
-    dateTo.setUTCDate(dateTo.getUTCDate() + 30);
+  // Load candidate orders ONCE and match in memory — a per-record Order.find
+  // loop exceeded the Heroku 30s router timeout on large datasets.
+  const salesTimes = candidates
+    .map((record) => (record.salesDate ? new Date(record.salesDate).getTime() : 0))
+    .filter(Boolean);
+  const minDate = new Date(Math.min(...salesTimes) - 30 * DAY_MS);
+  const maxDate = new Date(Math.max(...salesTimes) + 30 * DAY_MS);
 
-    const orderQuery = {
-      isActive: true,
-      "account.accountId": record.accountId,
-      channelId: record.channelId,
-      orderDate: { $gte: dateFrom, $lte: dateTo },
-      "items.productId": record.productId,
-    };
+  const orders = await Order.find({
+    isActive: true,
+    orderDate: { $gte: minDate, $lte: maxDate },
+    "account.accountId": { $in: [...new Set(candidates.map((record) => String(record.accountId)))] },
+  });
 
-    if (record.invoiceNumber) {
-      orderQuery.$or = [
-        { invoiceNumber: record.invoiceNumber },
-        { salesSheetReference: record.invoiceNumber },
-        { invoiceNumber: { $exists: false } },
-      ];
-    }
+  const ordersByKey = new Map();
+  orders.forEach((order) => {
+    (order.items || []).forEach((item) => {
+      const key = `${String(order.account?.accountId)}:${String(order.channelId)}:${String(item.productId)}`;
+      const list = ordersByKey.get(key);
+      if (list) list.push(order);
+      else ordersByKey.set(key, [order]);
+    });
+  });
 
-    const orders = await Order.find(orderQuery).limit(2);
+  for (const record of candidates) {
+    const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+    const key = `${String(record.accountId)}:${String(record.channelId)}:${String(record.productId)}`;
+    const pool = (ordersByKey.get(key) || []).filter((order) => {
+      const orderTime = order.orderDate ? new Date(order.orderDate).getTime() : 0;
+      if (Math.abs(orderTime - salesTime) > 30 * DAY_MS) return false;
+      if (record.invoiceNumber) {
+        return order.invoiceNumber === record.invoiceNumber
+          || order.salesSheetReference === record.invoiceNumber
+          || !order.invoiceNumber;
+      }
+      return true;
+    });
 
-    if (orders.length !== 1) {
-      record.matchStatus = orders.length > 1 ? "needs_review" : record.matchStatus;
-      record.matchNotes = orders.length > 1
-        ? "Multiple matching orders found"
-        : record.matchNotes || "No matching order found";
-      await record.save();
-      needsReview.push({ salesRecordId: record._id, reason: record.matchNotes });
+    if (pool.length !== 1) {
+      // Only persist when something actually changed — saving every unmatched
+      // record made full runs slow enough to hit the Heroku 30s timeout.
+      if (pool.length > 1 && record.matchStatus !== "needs_review") {
+        record.matchStatus = "needs_review";
+        record.matchNotes = "Multiple matching orders found";
+        record.updatedBy = actorId;
+        await record.save();
+      }
+      needsReview.push({
+        salesRecordId: record._id,
+        reason: pool.length > 1 ? "Multiple matching orders found" : "No matching order found",
+      });
       continue;
     }
 
-    const order = orders[0];
+    const order = pool[0];
     const orderItem = order.items.find((entry) => String(entry.productId) === String(record.productId));
     const quantityConfidence = orderItem && Number(orderItem.quantity) === Number(record.quantity) ? 0.2 : 0;
     const invoiceConfidence = record.invoiceNumber && order.invoiceNumber === record.invoiceNumber ? 0.2 : 0;
@@ -2584,10 +2634,19 @@ const matchSalesRecordsToOrders = async (records, actorId) => {
   return { matched, needsReview };
 };
 
+router.get("/match-jobs/:type", auth, loadSalesActor, requireManager, (req, res) => {
+  const job = matchJobs[req.params.type] || null;
+
+  return res.status(200).json({
+    success: true,
+    message: "Match job status",
+    data: job || { status: "idle" },
+  });
+});
+
 router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
-    let records;
-
+    // Single-record matching stays synchronous (fast path used by the records screen).
     if (req.body.salesRecordId) {
       const record = await getScopedSalesRecord(req.body.salesRecordId, req.currentUser);
 
@@ -2595,41 +2654,118 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
         return res.status(404).json({ success: false, message: "Sales record not found" });
       }
 
-      records = [record];
-    } else {
-      const query = {
-      status: "active",
-      isActive: true,
-      accountId: { $exists: true },
-      productId: { $exists: true },
-      channelId: { $exists: true },
-      ...await getAccessibleSalesQuery(req.currentUser),
-      };
+      const { matched, needsReview } = await matchSalesRecordsToOrders([record], req.currentUser._id);
 
-      records = await SalesRecord.find(query);
+      return res.status(200).json({
+        success: true,
+        message: "Sales to orders matching completed",
+        data: { matchedCount: matched.length, needsReviewCount: needsReview.length, matched, needsReview },
+      });
     }
 
-    const { matched, needsReview } = await matchSalesRecordsToOrders(records, req.currentUser._id);
+    if (matchJobs.orders?.status === "running") {
+      return res.status(409).json({ success: false, message: "Order matching is already running. Try again in a moment." });
+    }
 
-    return res.status(200).json({
-      success: true,
-      message: "Sales to orders matching completed",
-      data: {
+    const user = req.currentUser;
+    const { year, month, includeMatched } = req.body || {};
+
+    startMatchJob("orders", async () => {
+      const query = {
+        status: "active",
+        isActive: true,
+        accountId: { $exists: true },
+        productId: { $exists: true },
+        channelId: { $exists: true },
+        ...(includeMatched ? {} : { matchedOrderId: { $exists: false } }),
+        ...await getAccessibleSalesQuery(user),
+      };
+
+      if (year) query.year = Number(year);
+      if (month) query.month = Number(month);
+
+      const records = await SalesRecord.find(query).limit(5000);
+      const { matched, needsReview } = await matchSalesRecordsToOrders(records, user._id);
+
+      return {
+        checkedCount: records.length,
         matchedCount: matched.length,
         needsReviewCount: needsReview.length,
-        matched,
-        needsReview,
-      },
+      };
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: "Order matching started",
+      data: { started: true },
     });
   } catch (error) {
     return next(error);
   }
 });
 
+const matchSalesRecordsToTargets = async (records, actorId) => {
+  const matched = [];
+  const needsReview = [];
+
+  // One query for all active assignments, then match in memory — the
+  // previous per-record query loop exceeded the Heroku 30s timeout.
+  const allAssignments = await TargetAssignment.find({
+    status: "active",
+    isActive: true,
+  }).select("_id productId channelId startDate endDate").lean();
+  const assignmentsByProductChannel = new Map();
+
+  allAssignments.forEach((assignment) => {
+    const key = `${String(assignment.productId)}:${String(assignment.channelId)}`;
+    const list = assignmentsByProductChannel.get(key);
+    if (list) list.push(assignment);
+    else assignmentsByProductChannel.set(key, [assignment]);
+  });
+
+  for (const record of records) {
+    const key = `${String(record.productId)}:${String(record.channelId)}`;
+    const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+    const assignments = (assignmentsByProductChannel.get(key) || []).filter((assignment) => (
+      new Date(assignment.startDate).getTime() <= salesTime
+      && new Date(assignment.endDate).getTime() >= salesTime
+    ));
+
+    const nextIds = assignments.map((assignment) => String(assignment._id)).sort();
+    const prevIds = (record.matchedTargetAssignmentIds || []).map((id) => String(id)).sort();
+    const idsChanged = nextIds.join(",") !== prevIds.join(",");
+
+    let nextStatus = record.matchStatus;
+    let nextNotes = record.matchNotes;
+
+    if (assignments.length === 1) {
+      nextStatus = record.matchedOrderId ? "matched" : "partially_matched";
+      nextNotes = "Matched to one target assignment";
+      matched.push({ salesRecordId: record._id, targetAssignmentIds: nextIds });
+    } else if (assignments.length > 1) {
+      nextStatus = "needs_review";
+      nextNotes = "Multiple target assignments matched";
+      needsReview.push({ salesRecordId: record._id, reason: nextNotes, targetAssignmentIds: nextIds });
+    } else {
+      needsReview.push({ salesRecordId: record._id, reason: "No target assignment matched" });
+    }
+
+    // Only persist actual changes to keep full runs fast.
+    if (idsChanged || nextStatus !== record.matchStatus || nextNotes !== record.matchNotes) {
+      record.matchedTargetAssignmentIds = assignments.map((assignment) => assignment._id);
+      record.matchStatus = nextStatus;
+      record.matchNotes = nextNotes;
+      record.updatedBy = actorId;
+      await record.save();
+    }
+  }
+
+  return { matched, needsReview };
+};
+
 router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
-    let records;
-
+    // Single-record matching stays synchronous (fast path).
     if (req.body.salesRecordId) {
       const record = await getScopedSalesRecord(req.body.salesRecordId, req.currentUser);
 
@@ -2637,59 +2773,48 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
         return res.status(404).json({ success: false, message: "Sales record not found" });
       }
 
-      records = [record];
-    } else {
-      const query = {
-      status: "active",
-      isActive: true,
-      productId: { $exists: true },
-      channelId: { $exists: true },
-      ...await getAccessibleSalesQuery(req.currentUser),
-      };
+      const { matched, needsReview } = await matchSalesRecordsToTargets([record], req.currentUser._id);
 
-      records = await SalesRecord.find(query);
+      return res.status(200).json({
+        success: true,
+        message: "Sales to targets matching completed",
+        data: { matchedCount: matched.length, needsReviewCount: needsReview.length, matched, needsReview },
+      });
     }
-    const matched = [];
-    const needsReview = [];
 
-    for (const record of records) {
-      const assignments = await TargetAssignment.find({
-        productId: record.productId,
-        channelId: record.channelId,
+    if (matchJobs.targets?.status === "running") {
+      return res.status(409).json({ success: false, message: "Targets matching is already running. Try again in a moment." });
+    }
+
+    const user = req.currentUser;
+    const { year, month } = req.body || {};
+
+    startMatchJob("targets", async () => {
+      const query = {
         status: "active",
         isActive: true,
-        startDate: { $lte: record.salesDate },
-        endDate: { $gte: record.salesDate },
-      }).select("_id").lean();
+        productId: { $exists: true },
+        channelId: { $exists: true },
+        ...await getAccessibleSalesQuery(user),
+      };
 
-      record.matchedTargetAssignmentIds = assignments.map((assignment) => assignment._id);
-      record.updatedBy = req.currentUser._id;
+      if (year) query.year = Number(year);
+      if (month) query.month = Number(month);
 
-      if (assignments.length === 1) {
-        record.matchStatus = record.matchedOrderId ? "matched" : "partially_matched";
-        record.matchNotes = "Matched to one target assignment";
-        matched.push({ salesRecordId: record._id, targetAssignmentIds: record.matchedTargetAssignmentIds });
-      } else if (assignments.length > 1) {
-        record.matchStatus = "needs_review";
-        record.matchNotes = "Multiple target assignments matched";
-        needsReview.push({ salesRecordId: record._id, reason: record.matchNotes, targetAssignmentIds: record.matchedTargetAssignmentIds });
-      } else {
-        record.matchNotes = record.matchNotes || "No target assignment matched";
-        needsReview.push({ salesRecordId: record._id, reason: record.matchNotes });
-      }
+      const records = await SalesRecord.find(query).limit(5000);
+      const { matched, needsReview } = await matchSalesRecordsToTargets(records, user._id);
 
-      await record.save();
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "Sales to targets matching completed",
-      data: {
+      return {
+        checkedCount: records.length,
         matchedCount: matched.length,
         needsReviewCount: needsReview.length,
-        matched,
-        needsReview,
-      },
+      };
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: "Targets matching started",
+      data: { started: true },
     });
   } catch (error) {
     return next(error);

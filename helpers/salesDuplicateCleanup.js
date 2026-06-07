@@ -39,6 +39,9 @@ const buildDuplicateKey = (record) => {
       normalizeText(record.invoiceNumber),
       getProductIdentity(record),
       normalizeNumber(record.quantity),
+      // FOC lines arrive as separate rows with quantity 0 — without the FOC
+      // quantity in the key they collide and get wrongly removed as duplicates.
+      normalizeNumber(record.freeQuantity),
     ].join("|");
   }
 
