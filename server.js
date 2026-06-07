@@ -25,6 +25,7 @@ const medicalRepProductAssignmentRoutes = require('./routes/api/medicalRepProduc
 const targetAssignmentRoutes = require('./routes/api/targetAssignments');
 const targetPhasingRoutes = require('./routes/api/targetPhasing');
 const forecastRoutes = require('./routes/api/forecasts');
+const achievementRoutes = require('./routes/api/achievements');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 const ensureSalesChannelGroups = require('./helpers/ensureSalesChannelGroups');
 const { startDailySalesMatchingScheduler } = require('./services/salesMatchingScheduler');
@@ -93,6 +94,7 @@ app.use('/api/medical-rep-product-assignments', medicalRepProductAssignmentRoute
 app.use('/api/target-assignments', targetAssignmentRoutes);
 app.use('/api/target-phasing', targetPhasingRoutes);
 app.use('/api/forecasts', forecastRoutes);
+app.use('/api/achievements', achievementRoutes);
 app.use('/products', productRoutes);
 
 app.use((req, res) => {

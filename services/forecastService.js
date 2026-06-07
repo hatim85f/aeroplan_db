@@ -1232,6 +1232,7 @@ const getForecastSalesMatching = async ({ actor, year, month, userId }) => {
 
 module.exports = {
   addAccountForecast,
+  calculateMonthlyTarget,
   deleteAccountForecast,
   getCurrentUser,
   getForecastById,
