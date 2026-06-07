@@ -24,6 +24,7 @@ const sharedSalesRuleRoutes = require('./routes/api/sharedSalesRules');
 const medicalRepProductAssignmentRoutes = require('./routes/api/medicalRepProductAssignments');
 const targetAssignmentRoutes = require('./routes/api/targetAssignments');
 const targetPhasingRoutes = require('./routes/api/targetPhasing');
+const forecastRoutes = require('./routes/api/forecasts');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 const ensureSalesChannelGroups = require('./helpers/ensureSalesChannelGroups');
 
@@ -90,6 +91,7 @@ app.use('/api/shared-sales-rules', sharedSalesRuleRoutes);
 app.use('/api/medical-rep-product-assignments', medicalRepProductAssignmentRoutes);
 app.use('/api/target-assignments', targetAssignmentRoutes);
 app.use('/api/target-phasing', targetPhasingRoutes);
+app.use('/api/forecasts', forecastRoutes);
 app.use('/products', productRoutes);
 
 app.use((req, res) => {
