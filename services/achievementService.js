@@ -377,7 +377,8 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
       ...finalizeBucket(product.bucket),
       channels: product.channels.sort((left, right) => String(left.channelName).localeCompare(String(right.channelName))),
     }))
-    .sort((left, right) => right.ytdTargetValue - left.ytdTargetValue);
+    .sort((left, right) => String(left.productNickname || left.productName || "")
+      .localeCompare(String(right.productNickname || right.productName || ""), undefined, { sensitivity: "base" }));
 
   const reps = [...repNodes.values()]
     .map((node) => ({
