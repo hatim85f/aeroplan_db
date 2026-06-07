@@ -2758,11 +2758,16 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
       if (year) query.year = Number(year);
       if (month) query.month = Number(month);
 
-      const records = await SalesRecord.find(query).limit(5000);
+      const totalEligibleCount = await SalesRecord.countDocuments(query);
+      const records = await SalesRecord.find(query)
+        .sort({ year: -1, month: -1, createdAt: -1, _id: -1 })
+        .limit(5000);
       const { matched, needsReview } = await matchSalesRecordsToOrders(records, user._id);
 
       return {
         checkedCount: records.length,
+        totalEligibleCount,
+        limited: totalEligibleCount > records.length,
         matchedCount: matched.length,
         needsReviewCount: needsReview.length,
         matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
@@ -2930,11 +2935,16 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
       if (year) query.year = Number(year);
       if (month) query.month = Number(month);
 
-      const records = await SalesRecord.find(query).limit(5000);
+      const totalEligibleCount = await SalesRecord.countDocuments(query);
+      const records = await SalesRecord.find(query)
+        .sort({ year: -1, month: -1, createdAt: -1, _id: -1 })
+        .limit(5000);
       const { matched, needsReview } = await matchSalesRecordsToTargets(records, user._id);
 
       return {
         checkedCount: records.length,
+        totalEligibleCount,
+        limited: totalEligibleCount > records.length,
         matchedCount: matched.length,
         needsReviewCount: needsReview.length,
         matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
