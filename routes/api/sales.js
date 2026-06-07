@@ -2577,6 +2577,47 @@ const startMatchJob = (type, runner) => {
   });
 };
 
+const buildOrderMatchQuery = ({ year, month, includeMatched = false, accessibleQuery = {} }) => ({
+  status: "active",
+  isActive: true,
+  accountId: { $exists: true },
+  productId: { $exists: true },
+  channelId: { $exists: true },
+  ...(includeMatched ? {} : { matchedOrderId: { $exists: false } }),
+  ...accessibleQuery,
+  year: Number(year),
+  month: Number(month),
+});
+
+const buildTargetMatchQuery = ({ year, month, accessibleQuery = {} }) => ({
+  status: "active",
+  isActive: true,
+  productId: { $exists: true },
+  channelId: { $exists: true },
+  ...accessibleQuery,
+  year: Number(year),
+  month: Number(month),
+});
+
+const getMatchingRecords = async (query, limit = 5000) => {
+  const totalEligibleCount = await SalesRecord.countDocuments(query);
+  const records = await SalesRecord.find(query)
+    .sort({ year: -1, month: -1, createdAt: -1, _id: -1 })
+    .limit(limit);
+
+  return { totalEligibleCount, records };
+};
+
+const validateMatchPeriodOrThrow = (year, month) => {
+  const validationError = validateMonthYear(month, year);
+
+  if (validationError) {
+    const error = new Error(validationError);
+    error.statusCode = 400;
+    throw error;
+  }
+};
+
 const matchSalesRecordsToOrders = async (records, actorId) => {
   const matched = [];
   const needsReview = [];
@@ -2708,6 +2749,33 @@ const matchSalesRecordsToOrders = async (records, actorId) => {
   return { matched, needsReview };
 };
 
+const formatMatchResult = ({ records, totalEligibleCount, matched, needsReview }) => ({
+  checkedCount: records.length,
+  totalEligibleCount,
+  limited: totalEligibleCount > records.length,
+  matchedCount: matched.length,
+  needsReviewCount: needsReview.length,
+  matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
+  needsReview: needsReview.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
+});
+
+const runSalesOrderMatchForPeriod = async ({
+  year,
+  month,
+  includeMatched = false,
+  accessibleQuery = {},
+  actorId,
+  limit = 5000,
+}) => {
+  validateMatchPeriodOrThrow(year, month);
+
+  const query = buildOrderMatchQuery({ year, month, includeMatched, accessibleQuery });
+  const { totalEligibleCount, records } = await getMatchingRecords(query, limit);
+  const { matched, needsReview } = await matchSalesRecordsToOrders(records, actorId);
+
+  return formatMatchResult({ records, totalEligibleCount, matched, needsReview });
+};
+
 router.get("/match-jobs/:type", auth, loadSalesActor, requireManager, (req, res) => {
   const job = matchJobs[req.params.type] || null;
 
@@ -2743,41 +2811,17 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
 
     const user = req.currentUser;
     const { year, month, includeMatched } = req.body || {};
-    const validationError = validateMonthYear(month, year);
-
-    if (validationError) {
-      return res.status(400).json({ success: false, message: validationError });
-    }
+    validateMatchPeriodOrThrow(year, month);
 
     startMatchJob("orders", async () => {
-      const query = {
-        status: "active",
-        isActive: true,
-        accountId: { $exists: true },
-        productId: { $exists: true },
-        channelId: { $exists: true },
-        ...(includeMatched ? {} : { matchedOrderId: { $exists: false } }),
-        ...await getAccessibleSalesQuery(user),
-      };
-
-      query.year = Number(year);
-      query.month = Number(month);
-
-      const totalEligibleCount = await SalesRecord.countDocuments(query);
-      const records = await SalesRecord.find(query)
-        .sort({ year: -1, month: -1, createdAt: -1, _id: -1 })
-        .limit(5000);
-      const { matched, needsReview } = await matchSalesRecordsToOrders(records, user._id);
-
-      return {
-        checkedCount: records.length,
-        totalEligibleCount,
-        limited: totalEligibleCount > records.length,
-        matchedCount: matched.length,
-        needsReviewCount: needsReview.length,
-        matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
-        needsReview: needsReview.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
-      };
+      const accessibleQuery = await getAccessibleSalesQuery(user);
+      return runSalesOrderMatchForPeriod({
+        year,
+        month,
+        includeMatched,
+        accessibleQuery,
+        actorId: user._id,
+      });
     });
 
     return res.status(202).json({
@@ -2902,6 +2946,22 @@ const matchSalesRecordsToTargets = async (records, actorId) => {
   return { matched, needsReview };
 };
 
+const runSalesTargetMatchForPeriod = async ({
+  year,
+  month,
+  accessibleQuery = {},
+  actorId,
+  limit = 5000,
+}) => {
+  validateMatchPeriodOrThrow(year, month);
+
+  const query = buildTargetMatchQuery({ year, month, accessibleQuery });
+  const { totalEligibleCount, records } = await getMatchingRecords(query, limit);
+  const { matched, needsReview } = await matchSalesRecordsToTargets(records, actorId);
+
+  return formatMatchResult({ records, totalEligibleCount, matched, needsReview });
+};
+
 router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     // Single-record matching stays synchronous (fast path).
@@ -2927,39 +2987,16 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
 
     const user = req.currentUser;
     const { year, month } = req.body || {};
-    const validationError = validateMonthYear(month, year);
-
-    if (validationError) {
-      return res.status(400).json({ success: false, message: validationError });
-    }
+    validateMatchPeriodOrThrow(year, month);
 
     startMatchJob("targets", async () => {
-      const query = {
-        status: "active",
-        isActive: true,
-        productId: { $exists: true },
-        channelId: { $exists: true },
-        ...await getAccessibleSalesQuery(user),
-      };
-
-      query.year = Number(year);
-      query.month = Number(month);
-
-      const totalEligibleCount = await SalesRecord.countDocuments(query);
-      const records = await SalesRecord.find(query)
-        .sort({ year: -1, month: -1, createdAt: -1, _id: -1 })
-        .limit(5000);
-      const { matched, needsReview } = await matchSalesRecordsToTargets(records, user._id);
-
-      return {
-        checkedCount: records.length,
-        totalEligibleCount,
-        limited: totalEligibleCount > records.length,
-        matchedCount: matched.length,
-        needsReviewCount: needsReview.length,
-        matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
-        needsReview: needsReview.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
-      };
+      const accessibleQuery = await getAccessibleSalesQuery(user);
+      return runSalesTargetMatchForPeriod({
+        year,
+        month,
+        accessibleQuery,
+        actorId: user._id,
+      });
     });
 
     return res.status(202).json({
@@ -4066,5 +4103,8 @@ router._test = {
   validateSalesRow,
   priceValuesMatch,
 };
+
+router.runSalesOrderMatchForPeriod = runSalesOrderMatchForPeriod;
+router.runSalesTargetMatchForPeriod = runSalesTargetMatchForPeriod;
 
 module.exports = router;

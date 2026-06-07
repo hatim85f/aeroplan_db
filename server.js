@@ -27,6 +27,7 @@ const targetPhasingRoutes = require('./routes/api/targetPhasing');
 const forecastRoutes = require('./routes/api/forecasts');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 const ensureSalesChannelGroups = require('./helpers/ensureSalesChannelGroups');
+const { startDailySalesMatchingScheduler } = require('./services/salesMatchingScheduler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -107,6 +108,7 @@ const startServer = async () => {
   await connectDB();
   await cleanupObsoleteIndexes();
   await ensureSalesChannelGroups();
+  startDailySalesMatchingScheduler();
 
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
