@@ -2884,12 +2884,54 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
       { $limit: 50 },
     ]);
 
+    const salesByAccountPipeline = [
+      { $match: baseQuery },
+      {
+        $group: {
+          _id: "$accountId",
+          name: { $first: "$accountName" },
+          shipToAccountNames: { $addToSet: "$shipToAccountName" },
+          totalQuantity: { $sum: "$quantity" },
+          totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
+          totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
+          totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+          recordsCount: { $sum: 1 },
+        },
+      },
+      {
+        $set: {
+          shipToAccountNames: {
+            $filter: {
+              input: "$shipToAccountNames",
+              as: "shipToName",
+              cond: {
+                $and: [
+                  { $ne: ["$$shipToName", null] },
+                  { $ne: ["$$shipToName", ""] },
+                ],
+              },
+            },
+          },
+        },
+      },
+      {
+        $set: {
+          shipToAccountName: {
+            $cond: [
+              { $eq: [{ $size: "$shipToAccountNames" }, 1] },
+              { $first: "$shipToAccountNames" },
+              null,
+            ],
+          },
+        },
+      },
+      { $sort: { totalQuantity: -1 } },
+      { $limit: 50 },
+    ];
+
     const [salesByProduct, salesByAccount, salesByChannel] = await Promise.all([
       groupBy("productId", "productName"),
-      groupBy("accountId", "accountName", {
-        shipToAccountName: { $first: "$shipToAccountName" },
-        shipToAccountNames: { $addToSet: "$shipToAccountName" },
-      }),
+      SalesRecord.aggregate(salesByAccountPipeline),
       groupBy("channelId", "channelName"),
     ]);
     const uploadedSalesByCurrency = await SalesRecord.aggregate([
