@@ -2521,6 +2521,7 @@ router.post("/recalculate-shared-sales", auth, loadSalesActor, requireManager, a
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MATCH_RESULT_SAMPLE_LIMIT = 50;
 
 // In-memory match job tracker: matching runs in the background so the HTTP
 // response returns instantly (Heroku kills any request that exceeds 30s).
@@ -2603,6 +2604,14 @@ const matchSalesRecordsToOrders = async (records, actorId) => {
       }
       needsReview.push({
         salesRecordId: record._id,
+        invoiceNumber: record.invoiceNumber,
+        accountName: record.accountName,
+        productName: record.productName,
+        productNickname: record.productNickname,
+        channelName: record.channelName,
+        quantity: record.quantity,
+        freeQuantity: record.freeQuantity,
+        candidateOrdersCount: pool.length,
         reason: pool.length > 1 ? "Multiple matching orders found" : "No matching order found",
       });
       continue;
@@ -2628,7 +2637,18 @@ const matchSalesRecordsToOrders = async (records, actorId) => {
     order.updatedBy = actorId;
     await order.save();
 
-    matched.push({ salesRecordId: record._id, orderId: order._id, matchConfidence: record.matchConfidence });
+    matched.push({
+      salesRecordId: record._id,
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      accountName: record.accountName,
+      productName: record.productName,
+      productNickname: record.productNickname,
+      channelName: record.channelName,
+      quantity: record.quantity,
+      freeQuantity: record.freeQuantity,
+      matchConfidence: record.matchConfidence,
+    });
   }
 
   return { matched, needsReview };
@@ -2691,6 +2711,8 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
         checkedCount: records.length,
         matchedCount: matched.length,
         needsReviewCount: needsReview.length,
+        matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
+        needsReview: needsReview.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
       };
     });
 
@@ -2707,13 +2729,21 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
 const matchSalesRecordsToTargets = async (records, actorId) => {
   const matched = [];
   const needsReview = [];
+  const accountIds = [...new Set(records.map((record) => String(record.accountId || "")).filter(Boolean))];
+  const accounts = accountIds.length
+    ? await Account.find({ _id: { $in: accountIds } }).select("_id assignedMedicalRepIds").lean()
+    : [];
+  const assignedRepIdsByAccount = new Map(accounts.map((account) => [
+    String(account._id),
+    (account.assignedMedicalRepIds || []).map((repId) => String(repId)),
+  ]));
 
   // One query for all active assignments, then match in memory — the
   // previous per-record query loop exceeded the Heroku 30s timeout.
   const allAssignments = await TargetAssignment.find({
     status: "active",
     isActive: true,
-  }).select("_id productId channelId startDate endDate").lean();
+  }).select("_id userId userName productId channelId startDate endDate").lean();
   const assignmentsByProductChannel = new Map();
 
   allAssignments.forEach((assignment) => {
@@ -2723,12 +2753,16 @@ const matchSalesRecordsToTargets = async (records, actorId) => {
     else assignmentsByProductChannel.set(key, [assignment]);
   });
 
+  const recordBulkOps = [];
+
   for (const record of records) {
     const key = `${String(record.productId)}:${String(record.channelId)}`;
     const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+    const accountRepIds = assignedRepIdsByAccount.get(String(record.accountId)) || [];
     const assignments = (assignmentsByProductChannel.get(key) || []).filter((assignment) => (
       new Date(assignment.startDate).getTime() <= salesTime
       && new Date(assignment.endDate).getTime() >= salesTime
+      && (accountRepIds.length === 0 || accountRepIds.includes(String(assignment.userId)))
     ));
 
     const nextIds = assignments.map((assignment) => String(assignment._id)).sort();
@@ -2741,23 +2775,63 @@ const matchSalesRecordsToTargets = async (records, actorId) => {
     if (assignments.length === 1) {
       nextStatus = record.matchedOrderId ? "matched" : "partially_matched";
       nextNotes = "Matched to one target assignment";
-      matched.push({ salesRecordId: record._id, targetAssignmentIds: nextIds });
+      matched.push({
+        salesRecordId: record._id,
+        invoiceNumber: record.invoiceNumber,
+        accountName: record.accountName,
+        productName: record.productName,
+        productNickname: record.productNickname,
+        channelName: record.channelName,
+        targetAssignmentIds: nextIds,
+        targetRepName: assignments[0].userName,
+      });
     } else if (assignments.length > 1) {
       nextStatus = "needs_review";
       nextNotes = "Multiple target assignments matched";
-      needsReview.push({ salesRecordId: record._id, reason: nextNotes, targetAssignmentIds: nextIds });
+      needsReview.push({
+        salesRecordId: record._id,
+        invoiceNumber: record.invoiceNumber,
+        accountName: record.accountName,
+        productName: record.productName,
+        productNickname: record.productNickname,
+        channelName: record.channelName,
+        reason: nextNotes,
+        targetAssignmentIds: nextIds,
+      });
     } else {
-      needsReview.push({ salesRecordId: record._id, reason: "No target assignment matched" });
+      nextStatus = "needs_review";
+      nextNotes = "No target assignment matched";
+      needsReview.push({
+        salesRecordId: record._id,
+        invoiceNumber: record.invoiceNumber,
+        accountName: record.accountName,
+        productName: record.productName,
+        productNickname: record.productNickname,
+        channelName: record.channelName,
+        reason: nextNotes,
+      });
     }
 
     // Only persist actual changes to keep full runs fast.
     if (idsChanged || nextStatus !== record.matchStatus || nextNotes !== record.matchNotes) {
-      record.matchedTargetAssignmentIds = assignments.map((assignment) => assignment._id);
-      record.matchStatus = nextStatus;
-      record.matchNotes = nextNotes;
-      record.updatedBy = actorId;
-      await record.save();
+      recordBulkOps.push({
+        updateOne: {
+          filter: { _id: record._id },
+          update: {
+            $set: {
+              matchedTargetAssignmentIds: assignments.map((assignment) => assignment._id),
+              matchStatus: nextStatus,
+              matchNotes: nextNotes,
+              updatedBy: actorId,
+            },
+          },
+        },
+      });
     }
+  }
+
+  if (recordBulkOps.length) {
+    await SalesRecord.bulkWrite(recordBulkOps, { ordered: false });
   }
 
   return { matched, needsReview };
@@ -2808,6 +2882,8 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
         checkedCount: records.length,
         matchedCount: matched.length,
         needsReviewCount: needsReview.length,
+        matched: matched.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
+        needsReview: needsReview.slice(0, MATCH_RESULT_SAMPLE_LIMIT),
       };
     });
 
