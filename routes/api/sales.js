@@ -2218,6 +2218,9 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     res.status(201).json(responsePayload);
 
     setImmediate(() => {
+      const actorId = req.currentUser._id;
+      const createdRecordIds = createdRecords.map((record) => record._id);
+
       cleanupDuplicateSalesRecords({
         year: Number(req.body.year),
         month: Number(req.body.month),
@@ -2232,6 +2235,31 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         });
       }).catch((error) => {
         console.error("Background sales duplicate cleanup failed", error);
+      }).then(async () => {
+        // Auto-match the newly uploaded records to submitted orders so they
+        // are marked "matched_in_sales" without a manual matching run.
+        try {
+          const freshRecords = await SalesRecord.find({
+            _id: { $in: createdRecordIds },
+            status: "active",
+            isActive: true,
+            accountId: { $exists: true },
+            productId: { $exists: true },
+            channelId: { $exists: true },
+            matchedOrderId: { $exists: false },
+          });
+
+          if (freshRecords.length) {
+            const { matched, needsReview } = await matchSalesRecordsToOrders(freshRecords, actorId);
+            console.log("Auto order matching completed:", {
+              candidates: freshRecords.length,
+              matchedCount: matched.length,
+              needsReviewCount: needsReview.length,
+            });
+          }
+        } catch (error) {
+          console.error("Background order auto-matching failed", error);
+        }
       });
     });
 
@@ -2490,6 +2518,72 @@ router.post("/recalculate-shared-sales", auth, loadSalesActor, requireManager, a
   }
 });
 
+const matchSalesRecordsToOrders = async (records, actorId) => {
+  const matched = [];
+  const needsReview = [];
+
+  for (const record of records) {
+    if (!record.accountId || !record.productId || !record.channelId) continue;
+
+    const dateFrom = new Date(record.salesDate);
+    dateFrom.setUTCDate(dateFrom.getUTCDate() - 30);
+    const dateTo = new Date(record.salesDate);
+    dateTo.setUTCDate(dateTo.getUTCDate() + 30);
+
+    const orderQuery = {
+      isActive: true,
+      "account.accountId": record.accountId,
+      channelId: record.channelId,
+      orderDate: { $gte: dateFrom, $lte: dateTo },
+      "items.productId": record.productId,
+    };
+
+    if (record.invoiceNumber) {
+      orderQuery.$or = [
+        { invoiceNumber: record.invoiceNumber },
+        { salesSheetReference: record.invoiceNumber },
+        { invoiceNumber: { $exists: false } },
+      ];
+    }
+
+    const orders = await Order.find(orderQuery).limit(2);
+
+    if (orders.length !== 1) {
+      record.matchStatus = orders.length > 1 ? "needs_review" : record.matchStatus;
+      record.matchNotes = orders.length > 1
+        ? "Multiple matching orders found"
+        : record.matchNotes || "No matching order found";
+      await record.save();
+      needsReview.push({ salesRecordId: record._id, reason: record.matchNotes });
+      continue;
+    }
+
+    const order = orders[0];
+    const orderItem = order.items.find((entry) => String(entry.productId) === String(record.productId));
+    const quantityConfidence = orderItem && Number(orderItem.quantity) === Number(record.quantity) ? 0.2 : 0;
+    const invoiceConfidence = record.invoiceNumber && order.invoiceNumber === record.invoiceNumber ? 0.2 : 0;
+
+    record.matchedOrderId = order._id;
+    record.matchStatus = "matched";
+    record.matchConfidence = Math.min(1, 0.7 + quantityConfidence + invoiceConfidence);
+    record.matchNotes = "Matched to order";
+    record.updatedBy = actorId;
+    await record.save();
+
+    order.status = "matched_in_sales";
+    order.salesSheetMatchedAt = new Date();
+    order.salesSheetReference = record.invoiceNumber || String(record.salesUploadBatchId);
+    order.matchedSalesRecordId = record._id;
+    order.invoiceNumber = record.invoiceNumber || order.invoiceNumber;
+    order.updatedBy = actorId;
+    await order.save();
+
+    matched.push({ salesRecordId: record._id, orderId: order._id, matchConfidence: record.matchConfidence });
+  }
+
+  return { matched, needsReview };
+};
+
 router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     let records;
@@ -2514,65 +2608,8 @@ router.post("/match-orders", auth, loadSalesActor, requireManager, async (req, r
 
       records = await SalesRecord.find(query);
     }
-    const matched = [];
-    const needsReview = [];
 
-    for (const record of records) {
-      const dateFrom = new Date(record.salesDate);
-      dateFrom.setUTCDate(dateFrom.getUTCDate() - 30);
-      const dateTo = new Date(record.salesDate);
-      dateTo.setUTCDate(dateTo.getUTCDate() + 30);
-
-      const orderQuery = {
-        isActive: true,
-        "account.accountId": record.accountId,
-        channelId: record.channelId,
-        orderDate: { $gte: dateFrom, $lte: dateTo },
-        "items.productId": record.productId,
-      };
-
-      if (record.invoiceNumber) {
-        orderQuery.$or = [
-          { invoiceNumber: record.invoiceNumber },
-          { salesSheetReference: record.invoiceNumber },
-          { invoiceNumber: { $exists: false } },
-        ];
-      }
-
-      const orders = await Order.find(orderQuery).limit(2);
-
-      if (orders.length !== 1) {
-        record.matchStatus = orders.length > 1 ? "needs_review" : record.matchStatus;
-        record.matchNotes = orders.length > 1
-          ? "Multiple matching orders found"
-          : record.matchNotes || "No matching order found";
-        await record.save();
-        needsReview.push({ salesRecordId: record._id, reason: record.matchNotes });
-        continue;
-      }
-
-      const order = orders[0];
-      const orderItem = order.items.find((orderItem) => String(orderItem.productId) === String(record.productId));
-      const quantityConfidence = orderItem && Number(orderItem.quantity) === Number(record.quantity) ? 0.2 : 0;
-      const invoiceConfidence = record.invoiceNumber && order.invoiceNumber === record.invoiceNumber ? 0.2 : 0;
-
-      record.matchedOrderId = order._id;
-      record.matchStatus = "matched";
-      record.matchConfidence = Math.min(1, 0.7 + quantityConfidence + invoiceConfidence);
-      record.matchNotes = "Matched to order";
-      record.updatedBy = req.currentUser._id;
-      await record.save();
-
-      order.status = "matched_in_sales";
-      order.salesSheetMatchedAt = new Date();
-      order.salesSheetReference = record.invoiceNumber || String(record.salesUploadBatchId);
-      order.matchedSalesRecordId = record._id;
-      order.invoiceNumber = record.invoiceNumber || order.invoiceNumber;
-      order.updatedBy = req.currentUser._id;
-      await order.save();
-
-      matched.push({ salesRecordId: record._id, orderId: order._id, matchConfidence: record.matchConfidence });
-    }
+    const { matched, needsReview } = await matchSalesRecordsToOrders(records, req.currentUser._id);
 
     return res.status(200).json({
       success: true,

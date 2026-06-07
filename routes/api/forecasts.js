@@ -8,6 +8,7 @@ const router = express.Router();
 router.get("/my", auth, forecastController.loadActor, forecastController.getMyForecast);
 router.get("/team", auth, forecastController.loadActor, forecastController.getTeamForecasts);
 router.post("/refresh", auth, forecastController.loadActor, forecastController.refreshForecast);
+router.get("/matching", auth, forecastController.loadActor, forecastController.getForecastSalesMatching);
 router.get("/:id", auth, forecastController.loadActor, forecastController.getForecastById);
 router.post(
   "/:forecastId/items/:productId/channels/:channelId/accounts",

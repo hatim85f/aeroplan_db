@@ -46,6 +46,25 @@ const getTeamForecasts = async (req, res, next) => {
   }
 };
 
+const getForecastSalesMatching = async (req, res, next) => {
+  try {
+    const data = await forecastService.getForecastSalesMatching({
+      actor: req.currentUser,
+      year: req.query.year,
+      month: req.query.month,
+      userId: req.query.userId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Forecast sales matching fetched successfully",
+      data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const getForecastById = async (req, res, next) => {
   try {
     const data = await forecastService.getForecastById({
@@ -178,6 +197,7 @@ module.exports = {
   addAccountForecast,
   deleteAccountForecast,
   getForecastById,
+  getForecastSalesMatching,
   getMyForecast,
   getTeamForecasts,
   loadActor,

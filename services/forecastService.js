@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const Account = require("../models/Account");
 const ForecastMonth = require("../models/ForecastMonth");
+const SalesRecord = require("../models/SalesRecord");
 const TargetAssignment = require("../models/TargetAssignment");
 const TargetPhasing = require("../models/TargetPhasing");
 const User = require("../models/User");
@@ -945,11 +946,296 @@ const refreshForecast = async ({ actor, year, month, userId }) => {
   };
 };
 
+/* ── Forecast vs Sales matching ───────────────────────────── */
+
+const VALUE_BASIS_FIELDS = {
+  cifUsd: "calculatedCifUsd",
+  wholesaleAed: "calculatedWholesaleAed",
+  retailAed: "calculatedRetailAed",
+};
+
+const salesRecordValue = (record, basis = "cifUsd") => {
+  const field = VALUE_BASIS_FIELDS[basis] || VALUE_BASIS_FIELDS.cifUsd;
+  const calculated = Number(record[field]) || 0;
+  return calculated || Number(record.uploadedSalesValue) || 0;
+};
+
+// matched: within ±2% of forecast | over: above | under: partial | missed: no sales
+const matchStatusFor = (forecastAmount, actualAmount) => {
+  const forecast = Number(forecastAmount) || 0;
+  const actual = Number(actualAmount) || 0;
+
+  if (actual <= 0) return "missed";
+  if (forecast <= 0) return "over";
+
+  const ratio = actual / forecast;
+
+  if (ratio > 1.02) return "over";
+  if (ratio >= 0.98) return "matched";
+  return "under";
+};
+
+const pushToMap = (map, key, record) => {
+  const list = map.get(key);
+  if (list) list.push(record);
+  else map.set(key, [record]);
+};
+
+const computeForecastSalesMatching = async (forecast) => {
+  const items = forecast.items || [];
+  const productIds = items.map((item) => item.productId).filter(Boolean);
+
+  const forecastAccountIds = new Set();
+  items.forEach((item) => (item.channels || []).forEach((channel) =>
+    (channel.accountForecasts || []).forEach((entry) => {
+      if (entry.accountId) forecastAccountIds.add(String(entry.accountId));
+    })));
+
+  const repAccounts = await Account.find({ assignedMedicalRepIds: forecast.userId }).select("_id").lean();
+  const scopeAccountIds = new Set(repAccounts.map((account) => String(account._id)));
+  forecastAccountIds.forEach((id) => scopeAccountIds.add(id));
+
+  const records = productIds.length && scopeAccountIds.size
+    ? await SalesRecord.find({
+      year: forecast.year,
+      month: forecast.month,
+      isActive: true,
+      status: "active",
+      productId: { $in: productIds },
+      accountId: { $in: Array.from(scopeAccountIds) },
+    }).select("productId accountId channelId quantity uploadedSalesValue calculatedCifUsd calculatedWholesaleAed calculatedRetailAed").lean()
+    : [];
+
+  const byProductChannel = new Map();
+  const byProductChannelAccount = new Map();
+
+  records.forEach((record) => {
+    const pcKey = `${String(record.productId)}:${String(record.channelId)}`;
+    pushToMap(byProductChannel, pcKey, record);
+    pushToMap(byProductChannelAccount, `${pcKey}:${String(record.accountId)}`, record);
+  });
+
+  const products = [];
+  const accounts = [];
+  const totals = { forecastUnits: 0, forecastValue: 0, salesUnits: 0, salesValue: 0 };
+
+  items.forEach((item) => {
+    let itemSalesUnits = 0;
+    let itemSalesValue = 0;
+
+    (item.channels || []).forEach((channel) => {
+      const basis = channel.targetValueBasis || "cifUsd";
+      const pcKey = `${String(item.productId)}:${String(channel.channelId)}`;
+
+      (byProductChannel.get(pcKey) || []).forEach((record) => {
+        itemSalesUnits += Number(record.quantity) || 0;
+        itemSalesValue += salesRecordValue(record, basis);
+      });
+
+      (channel.accountForecasts || []).forEach((entry) => {
+        const rows = byProductChannelAccount.get(`${pcKey}:${String(entry.accountId)}`) || [];
+        const salesQuantity = round2(rows.reduce((sum, record) => sum + (Number(record.quantity) || 0), 0));
+        const salesValue = round2(rows.reduce((sum, record) => sum + salesRecordValue(record, basis), 0));
+        const inputType = entry.inputType === "value" ? "value" : "units";
+        const forecastAmount = inputType === "value" ? entry.forecastValue : entry.forecastQuantity;
+        const actualAmount = inputType === "value" ? salesValue : salesQuantity;
+
+        accounts.push({
+          accountForecastId: entry._id,
+          accountId: entry.accountId,
+          accountName: entry.accountName,
+          productId: item.productId,
+          productName: item.productName,
+          productNickname: item.productNickname,
+          channelId: channel.channelId,
+          channelName: channel.channelName,
+          inputType,
+          forecastQuantity: round2(entry.forecastQuantity),
+          forecastValue: round2(entry.forecastValue),
+          salesQuantity,
+          salesValue,
+          achievementPercentage: Number(forecastAmount) > 0 ? round2((actualAmount / forecastAmount) * 100) : 0,
+          matchStatus: matchStatusFor(forecastAmount, actualAmount),
+          notes: entry.notes,
+        });
+      });
+    });
+
+    const forecastUnits = round2(item.totalItemForecastUnits);
+    const forecastValue = round2(item.totalItemForecastValue);
+    itemSalesUnits = round2(itemSalesUnits);
+    itemSalesValue = round2(itemSalesValue);
+
+    products.push({
+      productId: item.productId,
+      productName: item.productName,
+      productNickname: item.productNickname,
+      targetUnits: round2(item.totalItemTargetUnits),
+      targetValue: round2(item.totalItemTargetValue),
+      forecastUnits,
+      forecastValue,
+      salesUnits: itemSalesUnits,
+      salesValue: itemSalesValue,
+      unitsAchievementPercentage: forecastUnits > 0 ? round2((itemSalesUnits / forecastUnits) * 100) : 0,
+      valueAchievementPercentage: forecastValue > 0 ? round2((itemSalesValue / forecastValue) * 100) : 0,
+      matchStatus: matchStatusFor(
+        forecastValue > 0 ? forecastValue : forecastUnits,
+        forecastValue > 0 ? itemSalesValue : itemSalesUnits,
+      ),
+    });
+
+    totals.forecastUnits += forecastUnits;
+    totals.forecastValue += forecastValue;
+    totals.salesUnits += itemSalesUnits;
+    totals.salesValue += itemSalesValue;
+  });
+
+  const accountStatusCounts = accounts.reduce(
+    (counts, row) => {
+      counts[row.matchStatus] = (counts[row.matchStatus] || 0) + 1;
+      return counts;
+    },
+    { matched: 0, over: 0, under: 0, missed: 0 },
+  );
+
+  return {
+    forecastId: forecast._id,
+    userId: forecast.userId,
+    userName: forecast.userName,
+    year: forecast.year,
+    month: forecast.month,
+    forecastStatus: forecast.forecastStatus,
+    summary: {
+      forecastUnits: round2(totals.forecastUnits),
+      forecastValue: round2(totals.forecastValue),
+      salesUnits: round2(totals.salesUnits),
+      salesValue: round2(totals.salesValue),
+      unitsAchievementPercentage: totals.forecastUnits > 0 ? round2((totals.salesUnits / totals.forecastUnits) * 100) : 0,
+      valueAchievementPercentage: totals.forecastValue > 0 ? round2((totals.salesValue / totals.forecastValue) * 100) : 0,
+      accountStatusCounts,
+    },
+    products,
+    accounts,
+  };
+};
+
+const getForecastSalesMatching = async ({ actor, year, month, userId }) => {
+  const period = normalizePeriod({ year, month });
+  let repIds;
+
+  if (!isManagerRole(actor.role)) {
+    repIds = [String(actor._id)];
+  } else if (userId) {
+    const rep = await loadRepForActor(actor, userId);
+    repIds = [String(rep._id)];
+  } else {
+    const accessible = await getAccessibleRepIds(actor);
+
+    if (accessible) {
+      repIds = accessible;
+    } else {
+      const all = await ForecastMonth.find({
+        year: period.year,
+        month: period.month,
+        isActive: true,
+      }).distinct("userId");
+      repIds = all.map((id) => String(id));
+    }
+  }
+
+  const forecasts = await ForecastMonth.find({
+    userId: { $in: repIds },
+    year: period.year,
+    month: period.month,
+    isActive: true,
+  }).lean();
+
+  const reps = [];
+
+  for (const forecast of forecasts) {
+    reps.push(await computeForecastSalesMatching(forecast));
+  }
+
+  const productMap = new Map();
+
+  reps.forEach((rep) => rep.products.forEach((product) => {
+    const key = String(product.productId);
+    const entry = productMap.get(key) || {
+      productId: product.productId,
+      productName: product.productName,
+      productNickname: product.productNickname,
+      forecastUnits: 0,
+      forecastValue: 0,
+      salesUnits: 0,
+      salesValue: 0,
+    };
+    entry.forecastUnits += product.forecastUnits;
+    entry.forecastValue += product.forecastValue;
+    entry.salesUnits += product.salesUnits;
+    entry.salesValue += product.salesValue;
+    productMap.set(key, entry);
+  }));
+
+  const products = Array.from(productMap.values())
+    .map((product) => ({
+      ...product,
+      forecastUnits: round2(product.forecastUnits),
+      forecastValue: round2(product.forecastValue),
+      salesUnits: round2(product.salesUnits),
+      salesValue: round2(product.salesValue),
+      unitsAchievementPercentage: product.forecastUnits > 0 ? round2((product.salesUnits / product.forecastUnits) * 100) : 0,
+      valueAchievementPercentage: product.forecastValue > 0 ? round2((product.salesValue / product.forecastValue) * 100) : 0,
+      matchStatus: matchStatusFor(
+        product.forecastValue > 0 ? product.forecastValue : product.forecastUnits,
+        product.forecastValue > 0 ? product.salesValue : product.salesUnits,
+      ),
+    }))
+    .sort((left, right) => right.forecastValue - left.forecastValue);
+
+  const summary = reps.reduce(
+    (acc, rep) => {
+      acc.forecastUnits += rep.summary.forecastUnits;
+      acc.forecastValue += rep.summary.forecastValue;
+      acc.salesUnits += rep.summary.salesUnits;
+      acc.salesValue += rep.summary.salesValue;
+      acc.accountStatusCounts.matched += rep.summary.accountStatusCounts.matched;
+      acc.accountStatusCounts.over += rep.summary.accountStatusCounts.over;
+      acc.accountStatusCounts.under += rep.summary.accountStatusCounts.under;
+      acc.accountStatusCounts.missed += rep.summary.accountStatusCounts.missed;
+      return acc;
+    },
+    {
+      forecastUnits: 0,
+      forecastValue: 0,
+      salesUnits: 0,
+      salesValue: 0,
+      accountStatusCounts: { matched: 0, over: 0, under: 0, missed: 0 },
+    },
+  );
+
+  summary.forecastUnits = round2(summary.forecastUnits);
+  summary.forecastValue = round2(summary.forecastValue);
+  summary.salesUnits = round2(summary.salesUnits);
+  summary.salesValue = round2(summary.salesValue);
+  summary.unitsAchievementPercentage = summary.forecastUnits > 0 ? round2((summary.salesUnits / summary.forecastUnits) * 100) : 0;
+  summary.valueAchievementPercentage = summary.forecastValue > 0 ? round2((summary.salesValue / summary.forecastValue) * 100) : 0;
+
+  return {
+    year: period.year,
+    month: period.month,
+    repsCount: reps.length,
+    summary,
+    products,
+    reps,
+  };
+};
+
 module.exports = {
   addAccountForecast,
   deleteAccountForecast,
   getCurrentUser,
   getForecastById,
+  getForecastSalesMatching,
   getMyForecast,
   refreshForecast,
   serializeForecast,

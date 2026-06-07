@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "PowerShell(cd d:\\\\Plans\\\\aeroplan_db; $output = node scripts/update-profile-pic.js; Write-Host \"EXIT: $LASTEXITCODE\"; Write-Host \"OUT: $output\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
+    ]
+  }
+}

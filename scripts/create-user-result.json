@@ -1,0 +1,3 @@
+{"step":"start"}
+{"step":"config_loaded","mongoURI":"found"}
+{"status":"error","message":"connect ECONNREFUSED 127.0.0.1:27017"}
