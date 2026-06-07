@@ -26,6 +26,7 @@ const targetAssignmentRoutes = require('./routes/api/targetAssignments');
 const targetPhasingRoutes = require('./routes/api/targetPhasing');
 const forecastRoutes = require('./routes/api/forecasts');
 const achievementRoutes = require('./routes/api/achievements');
+const accountAssignmentRoutes = require('./routes/api/accountAssignments');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 const ensureSalesChannelGroups = require('./helpers/ensureSalesChannelGroups');
 const { startDailySalesMatchingScheduler } = require('./services/salesMatchingScheduler');
@@ -95,6 +96,7 @@ app.use('/api/target-assignments', targetAssignmentRoutes);
 app.use('/api/target-phasing', targetPhasingRoutes);
 app.use('/api/forecasts', forecastRoutes);
 app.use('/api/achievements', achievementRoutes);
+app.use('/api/account-assignments', accountAssignmentRoutes);
 app.use('/products', productRoutes);
 
 app.use((req, res) => {

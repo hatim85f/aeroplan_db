@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 
 const Account = require("../models/Account");
+const AccountRepAssignment = require("../models/AccountRepAssignment");
 const SalesRecord = require("../models/SalesRecord");
 const TargetAssignment = require("../models/TargetAssignment");
 const TargetPhasing = require("../models/TargetPhasing");
@@ -136,7 +137,7 @@ const resolveRepIds = async (actor, userId) => {
  * aggregated in memory so the endpoint stays well under the Heroku timeout.
  */
 const computeAchievement = async ({ repIds, year, month, scope }) => {
-  const [assignments, defaultPhasings, repUsers, accounts] = await Promise.all([
+  const [assignments, defaultPhasings, repUsers, accounts, datedAssignments] = await Promise.all([
     TargetAssignment.find({
       userId: { $in: repIds },
       year,
@@ -151,12 +152,14 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
     }).sort({ createdAt: -1 }).lean(),
     User.find({ _id: { $in: repIds } }).select("_id fullName userName email").lean(),
     Account.find({ assignedMedicalRepIds: { $in: repIds } }).select("_id assignedMedicalRepIds").lean(),
+    AccountRepAssignment.find({ userId: { $in: repIds }, isActive: true })
+      .select("accountId userId startDate endDate").lean(),
   ]);
 
   const repSet = new Set(repIds);
   const repNames = new Map(repUsers.map((user) => [String(user._id), getRepDisplayName(user)]));
 
-  // accountId -> reps in scope assigned to that account (used for rep rows).
+  // accountId -> reps in scope statically assigned (legacy fallback).
   const accountReps = new Map();
   accounts.forEach((account) => {
     accountReps.set(
@@ -164,6 +167,37 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
       (account.assignedMedicalRepIds || []).map(String).filter((id) => repSet.has(id)),
     );
   });
+
+  // accountId -> dated coverage entries for scope reps.
+  const datedByAccount = new Map();
+  datedAssignments.forEach((entry) => {
+    const key = String(entry.accountId);
+    const list = datedByAccount.get(key);
+    if (list) list.push(entry);
+    else datedByAccount.set(key, [entry]);
+  });
+
+  // Rep credit for one sales record, in priority order:
+  // 1. manual repAttributions on the record (percentage shares)
+  // 2. dated AccountRepAssignment covering the record's salesDate (full credit)
+  // 3. legacy Account.assignedMedicalRepIds (full credit)
+  const resolveRepShares = (record) => {
+    const manual = (record.repAttributions || []).filter((entry) => repSet.has(String(entry.userId)));
+    if (manual.length) {
+      return manual.map((entry) => ({ repId: String(entry.userId), share: (Number(entry.percentage) || 0) / 100 }));
+    }
+
+    const salesTime = record.salesDate ? new Date(record.salesDate).getTime() : 0;
+    const dated = (datedByAccount.get(String(record.accountId)) || []).filter((entry) => (
+      new Date(entry.startDate).getTime() <= salesTime
+      && (!entry.endDate || new Date(entry.endDate).getTime() >= salesTime)
+    ));
+    if (dated.length) {
+      return [...new Set(dated.map((entry) => String(entry.userId)))].map((repId) => ({ repId, share: 1 }));
+    }
+
+    return (accountReps.get(String(record.accountId)) || []).map((repId) => ({ repId, share: 1 }));
+  };
 
   // ── Aggregation nodes ──
   const channelNodes = new Map(); // productId:channelId
@@ -233,15 +267,33 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
   // ── Actual sales: Jan..selected month, targeted product+channel combos only ──
   const productIds = [...new Set(assignments.map((assignment) => String(assignment.productId)))];
 
-  const records = productIds.length && accounts.length
-    ? await SalesRecord.find({
-      year,
-      month: { $lte: month },
-      status: "active",
-      isActive: true,
-      productId: { $in: productIds },
-      accountId: { $in: accounts.map((account) => account._id) },
-    }).select("productId channelId accountId month quantity uploadedSalesValue calculatedCifUsd calculatedWholesaleAed calculatedRetailAed").lean()
+  // Single-rep scope only counts sales attributable to that rep (manual
+  // attribution, dated coverage, or legacy account assignment). Team-wide
+  // scope counts every sale on the targeted product+channel combos so sales
+  // from unassigned accounts still appear in the team totals.
+  const singleRepScope = repIds.length === 1;
+  const salesQuery = {
+    year,
+    month: { $lte: month },
+    status: "active",
+    isActive: true,
+    productId: { $in: productIds },
+  };
+
+  if (singleRepScope) {
+    const repAccountIds = new Set(accounts.map((account) => String(account._id)));
+    datedAssignments.forEach((entry) => repAccountIds.add(String(entry.accountId)));
+
+    salesQuery.$or = [
+      { accountId: { $in: [...repAccountIds] } },
+      { "repAttributions.userId": repIds[0] },
+    ];
+  }
+
+  const records = productIds.length
+    ? await SalesRecord.find(salesQuery)
+      .select("productId channelId accountId month salesDate quantity uploadedSalesValue calculatedCifUsd calculatedWholesaleAed calculatedRetailAed repAttributions")
+      .lean()
     : [];
 
   for (const record of records) {
@@ -251,29 +303,37 @@ const computeAchievement = async ({ repIds, year, month, scope }) => {
     const units = Number(record.quantity) || 0;
     const value = salesRecordValue(record, node.targetValueBasis);
     const isSelectedMonth = Number(record.month) === month;
+    const repShares = resolveRepShares(record);
 
-    node.ytdSalesUnits += units;
-    node.ytdSalesValue += value;
-    totals.ytdSalesUnits += units;
-    totals.ytdSalesValue += value;
+    // Team scope: totals count the full record. Single-rep scope: totals
+    // reflect only that rep's share (e.g. a 40% manual attribution).
+    const totalsShare = singleRepScope
+      ? repShares.filter((entry) => entry.repId === repIds[0]).reduce((sum, entry) => sum + entry.share, 0)
+      : 1;
 
-    if (isSelectedMonth) {
-      node.monthlySalesUnits += units;
-      node.monthlySalesValue += value;
-      totals.monthlySalesUnits += units;
-      totals.monthlySalesValue += value;
+    if (totalsShare > 0) {
+      node.ytdSalesUnits += units * totalsShare;
+      node.ytdSalesValue += value * totalsShare;
+      totals.ytdSalesUnits += units * totalsShare;
+      totals.ytdSalesValue += value * totalsShare;
+
+      if (isSelectedMonth) {
+        node.monthlySalesUnits += units * totalsShare;
+        node.monthlySalesValue += value * totalsShare;
+        totals.monthlySalesUnits += units * totalsShare;
+        totals.monthlySalesValue += value * totalsShare;
+      }
     }
 
-    // Rep attribution via account assignment (same convention the sales
-    // visibility/forecast matching modules use). Totals count each record
-    // once; rep rows credit each assigned rep within scope.
-    (accountReps.get(String(record.accountId)) || []).forEach((repId) => {
+    // Rep rows: credit each rep with their share.
+    repShares.forEach(({ repId, share }) => {
+      if (share <= 0) return;
       const repNode = getRepNode(repId);
-      repNode.ytdSalesUnits += units;
-      repNode.ytdSalesValue += value;
+      repNode.ytdSalesUnits += units * share;
+      repNode.ytdSalesValue += value * share;
       if (isSelectedMonth) {
-        repNode.monthlySalesUnits += units;
-        repNode.monthlySalesValue += value;
+        repNode.monthlySalesUnits += units * share;
+        repNode.monthlySalesValue += value * share;
       }
     });
   }

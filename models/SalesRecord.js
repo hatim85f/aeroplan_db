@@ -295,6 +295,32 @@ const salesRecordSchema = new Schema(
         index: true,
       },
     ],
+    // Manual rep attribution override (e.g. drugstore liquidation help).
+    // When present it supersedes account-based rep attribution for this record.
+    repAttributions: [
+      {
+        userId: {
+          type: Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+          index: true,
+        },
+        userName: {
+          type: String,
+          trim: true,
+        },
+        percentage: {
+          type: Number,
+          required: true,
+          min: 0,
+          max: 100,
+        },
+        note: {
+          type: String,
+          trim: true,
+        },
+      },
+    ],
     matchStatus: {
       type: String,
       enum: ["unmatched", "partially_matched", "matched", "needs_review"],

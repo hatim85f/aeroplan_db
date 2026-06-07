@@ -3009,6 +3009,79 @@ router.post("/match-targets", auth, loadSalesActor, requireManager, async (req, 
   }
 });
 
+// Manual rep attribution for a sales record (overrides account-based logic).
+// Body: { repAttributions: [{ userId, percentage, note }] } — empty array clears.
+router.patch("/:id/attribution", auth, loadSalesActor, requireManager, async (req, res, next) => {
+  try {
+    const record = await getScopedSalesRecord(req.params.id, req.currentUser);
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Sales record not found" });
+    }
+
+    const inputAttributions = Array.isArray(req.body.repAttributions) ? req.body.repAttributions : null;
+
+    if (!inputAttributions) {
+      return res.status(400).json({ success: false, message: "repAttributions must be an array" });
+    }
+
+    if (!inputAttributions.length) {
+      record.repAttributions = [];
+    } else {
+      const userIds = inputAttributions.map((entry) => entry.userId).filter((id) => isValidObjectId(id));
+
+      if (userIds.length !== inputAttributions.length) {
+        return res.status(400).json({ success: false, message: "Every attribution needs a valid userId" });
+      }
+
+      let totalPercentage = 0;
+
+      for (const entry of inputAttributions) {
+        const percentage = Number(entry.percentage);
+
+        if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) {
+          return res.status(400).json({ success: false, message: "percentage must be a number between 0 and 100" });
+        }
+
+        totalPercentage += percentage;
+      }
+
+      if (totalPercentage > 100) {
+        return res.status(400).json({ success: false, message: "Total attribution percentage cannot exceed 100" });
+      }
+
+      const users = await User.find({ _id: { $in: userIds }, role: "representative" })
+        .select("_id fullName userName email").lean();
+      const usersById = new Map(users.map((user) => [String(user._id), user]));
+
+      if (users.length !== new Set(userIds.map(String)).size) {
+        return res.status(400).json({ success: false, message: "All attributed users must be medical representatives" });
+      }
+
+      record.repAttributions = inputAttributions.map((entry) => {
+        const user = usersById.get(String(entry.userId));
+        return {
+          userId: entry.userId,
+          userName: user.fullName || user.userName || user.email,
+          percentage: Number(entry.percentage),
+          note: entry.note,
+        };
+      });
+    }
+
+    record.updatedBy = req.currentUser._id;
+    await record.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Sales record attribution updated successfully",
+      data: record,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.post("/reprocess-channel-detection", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     const baseQuery = await getAccessibleSalesQuery(req.currentUser);
