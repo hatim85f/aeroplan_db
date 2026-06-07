@@ -2877,6 +2877,7 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
           totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
           totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+          totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
           recordsCount: { $sum: 1 },
         },
       },
@@ -2895,6 +2896,7 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
           totalCalculatedCifUsd: { $sum: "$calculatedCifUsd" },
           totalCalculatedWholesaleAed: { $sum: "$calculatedWholesaleAed" },
           totalCalculatedRetailAed: { $sum: "$calculatedRetailAed" },
+          totalTargetCalculatedValue: { $sum: "$targetCalculatedValue" },
           recordsCount: { $sum: 1 },
         },
       },
@@ -2925,7 +2927,7 @@ router.get("/overview", auth, loadSalesActor, async (req, res, next) => {
           },
         },
       },
-      { $sort: { totalQuantity: -1 } },
+      { $sort: { totalTargetCalculatedValue: -1 } },
       { $limit: 50 },
     ];
 
