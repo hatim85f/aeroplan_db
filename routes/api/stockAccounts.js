@@ -9,6 +9,7 @@ router.get("/", auth, stockController.loadActor, stockController.listStockAccoun
 router.post("/", auth, stockController.loadActor, stockController.createStockAccount);
 router.get("/:id", auth, stockController.loadActor, stockController.getStockAccountDetails);
 router.patch("/:id", auth, stockController.loadActor, stockController.updateStockAccount);
+router.delete("/:id", auth, stockController.loadActor, stockController.deleteStockAccount);
 router.post("/:id/linked-accounts", auth, stockController.loadActor, stockController.addLinkedAccounts);
 router.delete("/:id/linked-accounts/:accountId", auth, stockController.loadActor, stockController.removeLinkedAccount);
 router.get("/:id/latest", auth, stockController.loadActor, stockController.getLatestStock);

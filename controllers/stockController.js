@@ -35,6 +35,18 @@ const createStockAccount = async (req, res, next) => {
   }
 };
 
+const deleteStockAccount = async (req, res, next) => {
+  try {
+    const data = await stockService.deleteStockAccount({
+      actor: req.currentUser,
+      stockAccountId: req.params.id,
+    });
+    return ok(res, "Stock account deleted", data);
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const getStockAccountDetails = async (req, res, next) => {
   try {
     const data = await stockService.getStockAccountDetails({
@@ -155,6 +167,7 @@ module.exports = {
   addLinkedAccounts,
   createStockAccount,
   createStockUpdate,
+  deleteStockAccount,
   getHistory,
   getLatestStock,
   getProductHistory,

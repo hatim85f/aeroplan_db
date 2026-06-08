@@ -277,6 +277,23 @@ const assertCanManageLinks = (actor) => {
   }
 };
 
+const deleteStockAccount = async ({ actor, stockAccountId }) => {
+  const stockAccount = await getScopedStockAccount(actor, stockAccountId);
+
+  // Only the creator or a manager/admin may delete.
+  if (!isManagerRole(actor.role) && String(stockAccount.createdBy) !== String(actor._id)) {
+    throw makeError("You are not allowed to delete this stock account", 403);
+  }
+
+  // Soft delete — keeps stock-update history intact for audit/AI later.
+  stockAccount.isActive = false;
+  stockAccount.status = "inactive";
+  stockAccount.updatedBy = actor._id;
+  await stockAccount.save();
+
+  return { deleted: true, stockAccountId: stockAccount._id };
+};
+
 const addLinkedAccounts = async ({ actor, stockAccountId, linkedAccountIds }) => {
   assertCanManageLinks(actor);
   const stockAccount = await getScopedStockAccount(actor, stockAccountId);
@@ -586,6 +603,7 @@ module.exports = {
   addLinkedAccounts,
   createStockAccount,
   createStockUpdate,
+  deleteStockAccount,
   getHistory,
   getLatestStock,
   getStockAccountDetails,
