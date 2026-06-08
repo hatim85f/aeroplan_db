@@ -26,6 +26,7 @@ const targetAssignmentRoutes = require('./routes/api/targetAssignments');
 const targetPhasingRoutes = require('./routes/api/targetPhasing');
 const forecastRoutes = require('./routes/api/forecasts');
 const achievementRoutes = require('./routes/api/achievements');
+const stockAccountRoutes = require('./routes/api/stockAccounts');
 const accountAssignmentRoutes = require('./routes/api/accountAssignments');
 const cleanupObsoleteIndexes = require('./helpers/cleanupObsoleteIndexes');
 const ensureSalesChannelGroups = require('./helpers/ensureSalesChannelGroups');
@@ -97,6 +98,7 @@ app.use('/api/target-phasing', targetPhasingRoutes);
 app.use('/api/forecasts', forecastRoutes);
 app.use('/api/achievements', achievementRoutes);
 app.use('/api/account-assignments', accountAssignmentRoutes);
+app.use('/api/stock-accounts', stockAccountRoutes);
 app.use('/products', productRoutes);
 
 app.use((req, res) => {
