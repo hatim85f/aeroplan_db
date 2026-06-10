@@ -668,6 +668,23 @@ const sendMessage = async ({ actor, id, body }) => {
   return serializeMessage(message);
 };
 
+const deleteMessage = async ({ actor, id, messageId }) => {
+  await getScopedTask(actor, id);
+  if (!isValidObjectId(messageId)) throw makeError("messageId must be a valid MongoDB ObjectId", 400);
+  const message = await TaskMessage.findOne({ _id: messageId, taskId: id });
+  if (!message || message.isDeleted) throw makeError("Message not found", 404);
+
+  // Only the original sender (or an admin) can delete a message — deletes for everyone.
+  const isSender = String(message.senderId) === String(actor._id);
+  if (!isSender && actor.role !== "admin") throw makeError("You can only delete your own messages", 403);
+
+  message.isDeleted = true;
+  message.deletedAt = new Date();
+  message.deletedBy = actor._id;
+  await message.save();
+  return { messageId: message._id, deleted: true };
+};
+
 /* ── Dashboards / reports ───────────────────────── */
 
 const getMyDashboard = async ({ actor }) => {
@@ -783,6 +800,7 @@ module.exports = {
   addAssignees,
   addRecurringCompletion,
   createTask,
+  deleteMessage,
   deleteTask,
   getDashboard,
   getMyDashboard,

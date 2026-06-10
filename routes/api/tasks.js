@@ -21,6 +21,7 @@ router.get("/:id/recurring/my", auth, tasks.loadActor, tasks.getMyRecurring);
 router.get("/:id/recurring/team", auth, tasks.loadActor, tasks.getTeamRecurring);
 router.get("/:id/messages", auth, tasks.loadActor, tasks.listMessages);
 router.post("/:id/messages", auth, tasks.loadActor, tasks.sendMessage);
+router.delete("/:id/messages/:messageId", auth, tasks.loadActor, tasks.deleteMessage);
 router.post("/:id/assignees", auth, tasks.loadActor, tasks.addAssignees);
 router.delete("/:id/assignees/:userId", auth, tasks.loadActor, tasks.removeAssignee);
 router.post("/:id/steps/:stepId/complete", auth, tasks.loadActor, tasks.completeStep);

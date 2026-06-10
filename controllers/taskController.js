@@ -44,6 +44,7 @@ module.exports = {
 
   listMessages: wrap((req) => taskService.listMessages({ actor: req.currentUser, id: req.params.id, limit: req.query.limit, before: req.query.before }), "Messages fetched successfully"),
   sendMessage: wrap((req) => taskService.sendMessage({ actor: req.currentUser, id: req.params.id, body: req.body || {} }), "Message sent", 201),
+  deleteMessage: wrap((req) => taskService.deleteMessage({ actor: req.currentUser, id: req.params.id, messageId: req.params.messageId }), "Message deleted"),
 
   getMyDashboard: wrap((req) => taskService.getMyDashboard({ actor: req.currentUser }), "My task dashboard fetched successfully"),
   getTeamDashboard: wrap((req) => taskService.getTeamDashboard({ actor: req.currentUser }), "Team task dashboard fetched successfully"),
