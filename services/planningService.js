@@ -119,6 +119,40 @@ const listPlanningAccounts = async ({ actor, search, userId, status }) => {
 const createPlanningAccount = async ({ actor, body }) => {
   const rep = await resolveTargetRep(actor, body.userId);
 
+  // Bulk add several main accounts at once.
+  if (Array.isArray(body.accountIds) && body.accountIds.length) {
+    const ids = body.accountIds.filter(isValidObjectId);
+    const accounts = await Account.find({ _id: { $in: ids } })
+      .select("_id accountName accountType area territory keyContact phoneNumber").lean();
+    const existing = await PlanningAccount.find({ userId: rep._id, accountId: { $in: ids }, isActive: true })
+      .select("accountId").lean();
+    const existingSet = new Set(existing.map((entry) => String(entry.accountId)));
+
+    const docs = accounts
+      .filter((account) => !existingSet.has(String(account._id)))
+      .map((account) => ({
+        userId: rep._id,
+        userName: rep.name,
+        managerId: rep.managerId,
+        teamId: rep.teamId,
+        accountId: account._id,
+        accountName: account.accountName,
+        accountNameKey: normalizeKey(account.accountName),
+        isCustomAccount: false,
+        accountType: account.accountType || "other",
+        area: account.area,
+        territory: account.territory,
+        keyContact: account.keyContact,
+        phoneNumber: account.phoneNumber,
+        createdBy: actor._id,
+        updatedBy: actor._id,
+      }));
+
+    if (!docs.length) throw makeError("All selected accounts are already in the planning list", 409);
+    const created = await PlanningAccount.insertMany(docs);
+    return { createdCount: created.length, skippedCount: accounts.length - created.length, accounts: created };
+  }
+
   if (body.accountId) {
     if (!isValidObjectId(body.accountId)) throw makeError("accountId must be a valid MongoDB ObjectId", 400);
     const account = await Account.findById(body.accountId)
