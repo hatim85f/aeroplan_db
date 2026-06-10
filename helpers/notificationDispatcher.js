@@ -9,6 +9,8 @@ const createAndSendNotification = async ({
   routeName,
   payload = {},
   recipient,
+  sound,
+  channelId,
 }) => {
   const notification = await Notification.create({
     title,
@@ -26,6 +28,8 @@ const createAndSendNotification = async ({
     title,
     subtitle,
     routeName,
+    sound,
+    channelId,
     payload: {
       notificationId: String(notification._id),
       ...payload,

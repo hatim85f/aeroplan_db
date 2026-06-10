@@ -8,6 +8,10 @@ const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineUserIds } = require("../helpers/hierarchy");
+const { notifyUsers } = require("../helpers/notify");
+
+// Fire-and-forget notification — never let a notification failure break a task operation.
+const fireNotify = (opts) => { notifyUsers(opts).catch(() => {}); };
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -170,6 +174,18 @@ const createTask = async ({ actor, body }) => {
 
   await task.save();
   await logActivity(task._id, actor, "task_created", `Task created and assigned to ${assignedUsers.length} user(s)`);
+
+  // Notify assignees they have a new task (urgent priority uses the attention sound).
+  fireNotify({
+    from: actor._id,
+    recipientIds: assignedUsers.map((u) => u.userId),
+    title: `New task: ${task.title}`,
+    subtitle: `${getDisplayName(actor)} assigned you a ${task.priority} priority task`,
+    routeName: "TaskDashboard",
+    payload: { taskId: String(task._id) },
+    category: task.priority === "urgent" ? "task_urgent" : "task_assigned",
+  });
+
   const obj = task.toObject();
   return { ...obj, taskId: task._id };
 };
@@ -467,9 +483,20 @@ const updateTask = async ({ actor, id, body }) => {
 const deleteTask = async ({ actor, id }) => {
   const task = await getScopedTask(actor, id);
   if (!canManageTask(actor, task)) throw makeError("Only the task manager or admin can archive this task", 403);
+  const assigneeIds = activeAssignees(task).map((u) => u.userId);
   task.isActive = false;
   task.taskStatus = "archived";
   await task.save();
+
+  fireNotify({
+    from: actor._id,
+    recipientIds: assigneeIds,
+    title: `Task closed: ${task.title}`,
+    subtitle: `${getDisplayName(actor)} archived this task`,
+    routeName: "MyTasks",
+    payload: { taskId: String(task._id) },
+    category: "info",
+  });
   return { archived: true, taskId: task._id };
 };
 
@@ -484,9 +511,11 @@ const addAssignees = async ({ actor, id, userIds }) => {
   const users = await loadUsersInScope(actor, ids);
   const existingActive = new Set(activeAssignees(task).map((u) => String(u.userId)));
   let added = 0;
+  const addedIds = [];
 
   for (const user of users) {
     if (existingActive.has(String(user._id))) continue;
+    addedIds.push(user._id);
     const removed = (task.assignedUsers || []).find((u) => String(u.userId) === String(user._id) && u.status === "removed");
     if (removed) {
       removed.status = "active";
@@ -511,6 +540,18 @@ const addAssignees = async ({ actor, id, userIds }) => {
 
   if (task.taskType === "checklist") recalcChecklist(task);
   await task.save();
+
+  if (addedIds.length) {
+    fireNotify({
+      from: actor._id,
+      recipientIds: addedIds,
+      title: `Added to task: ${task.title}`,
+      subtitle: `${getDisplayName(actor)} added you to this task`,
+      routeName: "TaskDashboard",
+      payload: { taskId: String(task._id) },
+      category: "task_assigned",
+    });
+  }
   return { addedCount: added, task };
 };
 
@@ -529,6 +570,16 @@ const removeAssignee = async ({ actor, id, userId }) => {
   if (task.taskType === "checklist") recalcChecklist(task);
   await task.save();
   await logActivity(task._id, actor, "assignee_removed", `${entry.userName} removed from the task`);
+
+  fireNotify({
+    from: actor._id,
+    recipientIds: [userId],
+    title: `Removed from task: ${task.title}`,
+    subtitle: `${getDisplayName(actor)} removed you from this task`,
+    routeName: "MyTasks",
+    payload: { taskId: String(task._id) },
+    category: "info",
+  });
   return { removed: true, task };
 };
 
@@ -664,6 +715,21 @@ const sendMessage = async ({ actor, id, body }) => {
     voiceNoteDuration: type === "voice" ? body.voiceNoteDuration : undefined,
   });
   await logActivity(task._id, actor, type === "voice" ? "voice_note_added" : "comment_added", `${getDisplayName(actor)} ${type === "voice" ? "sent a voice note" : "commented"}`);
+
+  // Notify the other participants (active assignees + the task manager), not the sender.
+  const participantIds = [
+    ...activeAssignees(task).map((u) => u.userId),
+    ...(task.managerId ? [task.managerId] : []),
+  ];
+  fireNotify({
+    from: actor._id,
+    recipientIds: participantIds,
+    title: `${getDisplayName(actor)} · ${task.title}`,
+    subtitle: type === "voice" ? "🎤 Sent a voice note" : String(body.text).trim().slice(0, 120),
+    routeName: "TaskDashboard",
+    payload: { taskId: String(task._id), tab: "chat" },
+    category: "task_message",
+  });
   return serializeMessage(message);
 };
 

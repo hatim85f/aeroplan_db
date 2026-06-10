@@ -7,7 +7,9 @@ const isExpoPushToken = (token) => {
   );
 };
 
-const sendExpoPushNotifications = async ({ tokens, title, subtitle, routeName, payload = {} }) => {
+const sendExpoPushNotifications = async ({
+  tokens, title, subtitle, routeName, payload = {}, sound, channelId,
+}) => {
   const validTokens = [...new Set(tokens.filter(isExpoPushToken))];
   const invalidTokens = tokens.filter((token) => !isExpoPushToken(token));
 
@@ -21,7 +23,10 @@ const sendExpoPushNotifications = async ({ tokens, title, subtitle, routeName, p
 
   const messages = validTokens.map((token) => ({
     to: token,
-    sound: "default",
+    // iOS uses `sound` (a bundled file name, e.g. "task_new.wav", or "default").
+    // Android uses the channel's configured sound, selected via `channelId`.
+    sound: sound || "default",
+    ...(channelId ? { channelId } : {}),
     title,
     body: subtitle || "",
     data: {
