@@ -47,6 +47,8 @@ const getAccessibleRepIds = async (actor) => {
   const reps = await User.find({
     $or: [{ _id: actor._id }, { path: actor._id }],
     role: "representative",
+    isActive: { $ne: false },
+    status: { $ne: "inactive" },
   }).select("_id").lean();
   return reps.map((rep) => String(rep._id));
 };
@@ -468,7 +470,8 @@ const getManagerDashboard = async ({ actor, date }) => {
   const day = date ? startOfDay(date) : startOfDay(new Date());
   const repIds = await getAccessibleRepIds(actor);
 
-  const repQuery = { role: "representative" };
+  // Only active reps appear in the team plan.
+  const repQuery = { role: "representative", isActive: { $ne: false }, status: { $ne: "inactive" } };
   if (repIds) repQuery._id = { $in: repIds };
   const reps = await User.find(repQuery).select("_id fullName userName email").sort({ fullName: 1 }).lean();
 
