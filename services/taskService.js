@@ -105,12 +105,17 @@ const buildAssignedUser = (user, actorId) => ({
 });
 
 const createTask = async ({ actor, body }) => {
-  if (!isManagerRole(actor.role)) throw makeError("Only managers can create tasks", 403);
   if (!String(body.title || "").trim()) throw makeError("title is required", 400);
   if (!["checklist", "recurring"].includes(body.taskType)) throw makeError("taskType must be checklist or recurring", 400);
 
+  const actorIsManager = isManagerRole(actor.role);
+
+  // Reps can only create self-assigned tasks; their manager is auto-involved.
   let users = [];
-  if (body.assignToAllTeam) {
+  if (!actorIsManager) {
+    users = await loadUsersInScope(actor, [String(actor._id)]);
+    if (!users.length) users = [actor];
+  } else if (body.assignToAllTeam) {
     users = await getTeamRepUsers(actor);
   } else {
     const ids = Array.isArray(body.assignedUserIds) ? body.assignedUserIds : [];
@@ -121,6 +126,9 @@ const createTask = async ({ actor, body }) => {
 
   const assignedUsers = users.map((u) => buildAssignedUser(u, actor._id));
 
+  // For a rep-created task, attach the rep's manager so they have oversight.
+  const managerId = actorIsManager ? actor._id : (actor.managerId || actor.reportsTo || null);
+
   const task = new Task({
     title: String(body.title).trim(),
     description: body.description,
@@ -129,7 +137,7 @@ const createTask = async ({ actor, body }) => {
     createdBy: actor._id,
     createdByName: getDisplayName(actor),
     createdByRole: actor.role,
-    managerId: isManagerRole(actor.role) ? actor._id : actor.managerId,
+    managerId,
     teamId: actor.teamId,
     priority: ["low", "medium", "high", "urgent"].includes(body.priority) ? body.priority : "medium",
     startDate: body.startDate ? startOfDay(body.startDate) : startOfDay(new Date()),
