@@ -7,6 +7,7 @@ const User = require("../../models/User");
 const Team = require("../../models/Team");
 const { createAppId } = require("../../helpers/appId");
 const { isManagerRole } = require("../../helpers/roles");
+const { repairHierarchyPaths } = require("../../helpers/hierarchy");
 
 const router = express.Router();
 const CODE_EXPIRY_MINUTES = 15;
@@ -646,6 +647,38 @@ router.patch("/me/profile", backendAuth, async (req, res, next) => {
       success: true,
       message: "User profile updated successfully",
       data: await buildUserProfile(user),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// One-time admin maintenance: rebuild every user's `path` from the managerId
+// chain so stale ancestor paths are corrected.
+router.post("/users/repair-hierarchy", backendAuth, async (req, res, next) => {
+  try {
+    const currentUser = await User.findById(req.backendUser.id).select("_id role").lean();
+
+    if (!currentUser) {
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found",
+      });
+    }
+
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only admins can repair the hierarchy",
+      });
+    }
+
+    const result = await repairHierarchyPaths();
+
+    return res.status(200).json({
+      success: true,
+      message: "Hierarchy paths repaired",
+      data: result,
     });
   } catch (error) {
     return next(error);

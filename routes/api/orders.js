@@ -10,6 +10,7 @@ const SalesTeamMember = require("../../models/SalesTeamMember");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
+const { getDownlineUserIds } = require("../../helpers/hierarchy");
 
 const router = express.Router();
 
@@ -84,14 +85,7 @@ const getAccessibleRepIds = async (user) => {
     return [userId];
   }
 
-  const scopedUsers = await User.find({
-    $or: [
-      { _id: user._id },
-      { path: user._id },
-    ],
-  }).select("_id").lean();
-
-  return scopedUsers.map((scopedUser) => String(scopedUser._id));
+  return getDownlineUserIds(user._id);
 };
 
 const ensureCanAccessOrder = async (user, order) => {

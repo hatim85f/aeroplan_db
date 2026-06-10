@@ -5,6 +5,7 @@ const Team = require("../../models/Team");
 const TeamInvitation = require("../../models/TeamInvitation");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { getDownlineUserIds } = require("../../helpers/hierarchy");
 
 const router = express.Router();
 
@@ -271,10 +272,17 @@ const syncTeamMembersFromLines = async (team) => {
   };
 };
 
-const buildTeamQuery = (user, query) => {
-  const teamQuery = isManagerRole(user.role)
-    ? { managerId: user._id }
-    : { members: user._id };
+const buildTeamQuery = async (user, query) => {
+  let teamQuery;
+  if (user.role === "admin") {
+    // Preserve original admin handling: teams the admin directly manages.
+    teamQuery = { managerId: user._id };
+  } else if (isManagerRole(user.role)) {
+    // Manager / senior_manager: every team managed by anyone in their sub-tree.
+    teamQuery = { managerId: { $in: await getDownlineUserIds(user._id) } };
+  } else {
+    teamQuery = { members: user._id };
+  }
 
   if (query.lineId) {
     const normalizedLineId = normalizeLineId(query.lineId);
@@ -429,7 +437,7 @@ router.get("/my-teams", auth, async (req, res, next) => {
       });
     }
 
-    const teams = await Team.find(buildTeamQuery(user, req.query))
+    const teams = await Team.find(await buildTeamQuery(user, req.query))
       .populate("managerId", "fullName email appId role profilePicture")
       .populate("members", "fullName email appId role status joinDate")
       .sort({ createdAt: -1 });
@@ -455,7 +463,7 @@ router.get("/dashboard", auth, async (req, res, next) => {
       });
     }
 
-    const teams = await Team.find(buildTeamQuery(user, req.query))
+    const teams = await Team.find(await buildTeamQuery(user, req.query))
       .populate("managerId", "fullName email appId role profilePicture")
       .populate(
         "members",

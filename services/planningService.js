@@ -8,6 +8,7 @@ const TargetAssignment = require("../models/TargetAssignment");
 const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
+const { getDownlineRepIds } = require("../helpers/hierarchy");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -44,9 +45,9 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 const getAccessibleRepIds = async (actor) => {
   if (actor.role === "admin") return null; // all
   if (!isManagerRole(actor.role)) return [String(actor._id)];
+  const downlineRepIds = await getDownlineRepIds(actor._id);
   const reps = await User.find({
-    $or: [{ _id: actor._id }, { path: actor._id }],
-    role: "representative",
+    _id: { $in: downlineRepIds },
     isActive: { $ne: false },
     status: { $ne: "inactive" },
   }).select("_id").lean();

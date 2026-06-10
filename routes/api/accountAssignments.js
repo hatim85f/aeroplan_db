@@ -7,6 +7,7 @@ const AccountRepAssignment = require("../../models/AccountRepAssignment");
 const User = require("../../models/User");
 const forecastService = require("../../services/forecastService");
 const { isManagerRole } = require("../../helpers/roles");
+const { getDownlineRepIds } = require("../../helpers/hierarchy");
 
 const router = express.Router();
 
@@ -84,7 +85,8 @@ router.get("/reps", auth, loadActor, requireManager, async (req, res, next) => {
     const query = { role: "representative" };
 
     if (req.currentUser.role !== "admin") {
-      query.$or = [{ _id: req.currentUser._id }, { path: req.currentUser._id }];
+      const downlineRepIds = await getDownlineRepIds(req.currentUser._id);
+      query._id = { $in: downlineRepIds };
     }
 
     const reps = await User.find(query)

@@ -8,6 +8,7 @@ const TargetPhasing = require("../models/TargetPhasing");
 const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
+const { getDownlineRepIds } = require("../helpers/hierarchy");
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -114,12 +115,10 @@ const getAccessibleRepIds = async (actor) => {
     return [actorId];
   }
 
+  const downlineRepIds = await getDownlineRepIds(actor._id);
+
   const reps = await User.find({
-    $or: [
-      { _id: actor._id },
-      { path: actor._id },
-    ],
-    role: "representative",
+    _id: { $in: downlineRepIds },
     status: "active",
   }).select("_id").lean();
 

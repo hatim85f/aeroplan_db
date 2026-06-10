@@ -5,6 +5,7 @@ const Product = require("../../models/Product");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
+const { getDownlineRepIds } = require("../../helpers/hierarchy");
 
 const router = express.Router();
 
@@ -94,15 +95,7 @@ const getAccessibleRepIds = async (user) => {
     return [userId];
   }
 
-  const scopedUsers = await User.find({
-    $or: [
-      { _id: user._id },
-      { path: user._id },
-    ],
-    role: "representative",
-  }).select("_id").lean();
-
-  return scopedUsers.map((scopedUser) => String(scopedUser._id));
+  return getDownlineRepIds(user._id);
 };
 
 const ensureCanAccessRep = async (actor, medicalRepId) => {

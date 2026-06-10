@@ -8,6 +8,7 @@ const TargetPhasing = require("../models/TargetPhasing");
 const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
+const { getDownlineRepIds } = require("../helpers/hierarchy");
 const { calculateMonthlyTarget } = require("./forecastService");
 
 const makeError = (message, statusCode = 400) => {
@@ -121,12 +122,7 @@ const resolveRepIds = async (actor, userId) => {
     return ids.map((id) => String(id));
   }
 
-  const reps = await User.find({
-    $or: [{ _id: actor._id }, { path: actor._id }],
-    role: "representative",
-  }).select("_id").lean();
-
-  return reps.map((rep) => String(rep._id));
+  return getDownlineRepIds(actor._id);
 };
 
 /**

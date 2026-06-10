@@ -15,6 +15,7 @@ const User = require("../../models/User");
 const { applySharedSalesToRecord, recalculateSharedSales, recalculateSharedSalesOptimized } = require("../../helpers/sharedSales");
 const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
+const { getDownlineUserIds: getDownlineUserIdsBFS } = require("../../helpers/hierarchy");
 
 const router = express.Router();
 
@@ -318,14 +319,7 @@ const getScopedUserIds = async (user) => {
     return [user._id];
   }
 
-  const scopedUsers = await User.find({
-    $or: [
-      { _id: user._id },
-      { path: user._id },
-    ],
-  }).select("_id").lean();
-
-  return scopedUsers.map((scopedUser) => scopedUser._id);
+  return getDownlineUserIdsBFS(user._id);
 };
 
 const normalizeObjectIdList = (values = []) => values
@@ -369,15 +363,7 @@ const getDownlineUserIds = async (managerId) => {
     return [];
   }
 
-  const managerObjectId = new mongoose.Types.ObjectId(managerId);
-  const users = await User.find({
-    $or: [
-      { _id: managerObjectId },
-      { path: managerObjectId },
-    ],
-  }).select("_id").lean();
-
-  return users.map((user) => user._id);
+  return getDownlineUserIdsBFS(managerId);
 };
 
 const filterUserIdsByVisibility = (candidateUserIds, visibleUserIds) => {

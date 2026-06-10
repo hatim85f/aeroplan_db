@@ -6,6 +6,7 @@ const SalesRecord = require("../models/SalesRecord");
 const StockAccount = require("../models/StockAccount");
 const StockUpdate = require("../models/StockUpdate");
 const { isManagerRole } = require("../helpers/roles");
+const { getDownlineUserIds } = require("../helpers/hierarchy");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -25,11 +26,12 @@ const getDisplayName = (user = {}) =>
  * - manager: stock accounts under their management (managerId) or created by them
  * - rep: stock accounts under their manager's scope or created by them
  */
-const buildScopeQuery = (actor) => {
+const buildScopeQuery = async (actor) => {
   if (actor.role === "admin") return {};
 
   if (isManagerRole(actor.role)) {
-    return { $or: [{ managerId: actor._id }, { createdBy: actor._id }] };
+    const downlineIds = await getDownlineUserIds(actor._id);
+    return { $or: [{ managerId: { $in: downlineIds } }, { createdBy: actor._id }] };
   }
 
   const branches = [{ createdBy: actor._id }];
@@ -46,7 +48,7 @@ const getScopedStockAccount = async (actor, stockAccountId) => {
   const stockAccount = await StockAccount.findOne({
     _id: stockAccountId,
     isActive: true,
-    ...buildScopeQuery(actor),
+    ...(await buildScopeQuery(actor)),
   });
 
   if (!stockAccount) {
@@ -150,7 +152,7 @@ const movementStatusOf = (latestItems) => {
 /* ── Stock accounts CRUD ───────────────────────────── */
 
 const listStockAccounts = async ({ actor, search, status }) => {
-  const query = { isActive: true, ...buildScopeQuery(actor) };
+  const query = { isActive: true, ...(await buildScopeQuery(actor)) };
   if (status && ["active", "inactive"].includes(status)) query.status = status;
   if (search) query.accountName = { $regex: String(search).trim(), $options: "i" };
 

@@ -7,6 +7,7 @@ const TaskOccurrence = require("../models/TaskOccurrence");
 const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
+const { getDownlineUserIds } = require("../helpers/hierarchy");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -33,9 +34,7 @@ const daysBetween = (a, b) => Math.round((startOfDay(b).getTime() - startOfDay(a
 const getAccessibleRepIds = async (actor) => {
   if (actor.role === "admin") return null;
   if (!isManagerRole(actor.role)) return [String(actor._id)];
-  const reps = await User.find({ $or: [{ _id: actor._id }, { path: actor._id }] })
-    .select("_id").lean();
-  return reps.map((u) => String(u._id));
+  return getDownlineUserIds(actor._id);
 };
 
 const loadUsersInScope = async (actor, userIds) => {
