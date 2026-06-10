@@ -255,11 +255,15 @@ const getAccountSource = async ({ actor, search, assignedOnly, userId }) => {
   if (search) query.accountName = { $regex: String(search).trim(), $options: "i" };
 
   const wantAssignedOnly = assignedOnly === undefined ? !isManagerRole(actor.role) : assignedOnly === "true" || assignedOnly === true;
-  if (wantAssignedOnly && !isManagerRole(actor.role)) {
-    query.assignedMedicalRepIds = rep._id;
-  } else if (wantAssignedOnly) {
+  if (wantAssignedOnly) {
     query.assignedMedicalRepIds = rep._id;
   }
+
+  // Exclude accounts already added as planning accounts for this rep.
+  const alreadyAdded = await PlanningAccount.find({ userId: rep._id, accountId: { $exists: true }, isActive: true })
+    .select("accountId").lean();
+  const addedIds = alreadyAdded.map((entry) => entry.accountId).filter(Boolean);
+  if (addedIds.length) query._id = { $nin: addedIds };
 
   const accounts = await Account.find(query)
     .select("_id accountName accountType area territory keyContact phoneNumber")
