@@ -22,7 +22,10 @@ const createAndSendNotification = async ({
     timeStamp: new Date(),
   });
 
-  const tokenEntries = recipient.notificationTokens || recipient.pushTokens || [];
+  const tokenEntries = [
+    ...(recipient.notificationTokens || []),
+    ...(recipient.pushTokens || []),
+  ];
   const tokens = tokenEntries.map((item) => (typeof item === "string" ? item : item.token)).filter(Boolean);
   const pushResult = await sendExpoPushNotifications({
     tokens,

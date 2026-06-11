@@ -60,11 +60,21 @@ router.post("/register-token", auth, async (req, res, next) => {
 
     await User.updateOne(
       { _id: user._id },
-      { $pull: { notificationTokens: { $or: pullMatches } } },
+      {
+        $pull: {
+          notificationTokens: { $or: pullMatches },
+          pushTokens: { $or: pullMatches },
+        },
+      },
     );
     const updatedUser = await User.findByIdAndUpdate(
       user._id,
-      { $addToSet: { notificationTokens: pushToken } },
+      {
+        $addToSet: {
+          notificationTokens: pushToken,
+          pushTokens: pushToken,
+        },
+      },
       { new: true },
     );
 
@@ -73,7 +83,7 @@ router.post("/register-token", auth, async (req, res, next) => {
       message: "Notification token registered successfully",
       data: {
         notificationTokens: updatedUser.notificationTokens,
-        pushTokens: updatedUser.notificationTokens,
+        pushTokens: updatedUser.pushTokens,
       },
     });
   } catch (error) {
@@ -103,7 +113,12 @@ router.delete("/remove-token", auth, async (req, res, next) => {
 
     await User.updateOne(
       { _id: user._id },
-      { $pull: { notificationTokens: token ? { token } : { deviceId } } },
+      {
+        $pull: {
+          notificationTokens: token ? { token } : { deviceId },
+          pushTokens: token ? { token } : { deviceId },
+        },
+      },
     );
     const updatedUser = await getCurrentUser(user._id);
 
@@ -112,7 +127,7 @@ router.delete("/remove-token", auth, async (req, res, next) => {
       message: "Notification token removed successfully",
       data: {
         notificationTokens: updatedUser.notificationTokens,
-        pushTokens: updatedUser.notificationTokens,
+        pushTokens: updatedUser.pushTokens,
       },
     });
   } catch (error) {

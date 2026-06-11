@@ -309,6 +309,7 @@ const userSchema = new Schema(
       default: "offline",
     },
     notificationTokens: [notificationTokenSchema],
+    pushTokens: [notificationTokenSchema],
   },
   { timestamps: true },
 );
