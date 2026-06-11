@@ -16,6 +16,7 @@ const { applySharedSalesToRecord, recalculateSharedSales, recalculateSharedSales
 const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpers/salesDuplicateCleanup");
 const { isManagerRole } = require("../../helpers/roles");
 const { getDownlineUserIds: getDownlineUserIdsBFS } = require("../../helpers/hierarchy");
+const { notifyUsers } = require("../../helpers/notify");
 
 const router = express.Router();
 
@@ -380,11 +381,20 @@ const getAssignedAccountIds = async (scopedUserIds) => {
     return [];
   }
 
-  const accounts = await Account.find({
-    assignedMedicalRepIds: { $in: scopedUserIds },
-  }).select("_id").lean();
+  // Accounts visible to these users come from BOTH assignment systems:
+  //  1) Account.assignedMedicalRepIds (static assignment set on the Accounts screen)
+  //  2) AccountRepAssignment dated coverage (set on the Rep Coverage screen)
+  const AccountRepAssignment = require("../../models/AccountRepAssignment");
+  const [accounts, coverage] = await Promise.all([
+    Account.find({ assignedMedicalRepIds: { $in: scopedUserIds } }).select("_id").lean(),
+    AccountRepAssignment.find({ userId: { $in: scopedUserIds }, isActive: { $ne: false } })
+      .select("accountId").lean(),
+  ]);
 
-  return accounts.map((account) => account._id);
+  const ids = new Map();
+  accounts.forEach((a) => ids.set(String(a._id), a._id));
+  coverage.forEach((c) => { if (c.accountId) ids.set(String(c.accountId), c.accountId); });
+  return [...ids.values()];
 };
 
 const getAccessibleSalesBatchQuery = async (user) => {
@@ -2233,6 +2243,26 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     };
 
     res.status(201).json(responsePayload);
+
+    // Fire-and-forget: notify the uploader's upline managers ONCE per completed
+    // upload. For chunked uploads only fire on the final chunk; otherwise fire
+    // for the single (non-chunked) request.
+    const isChunkedUpload = Number.isInteger(chunkIndex);
+    if (!isChunkedUpload || isLastChunk) {
+      const actor = req.currentUser;
+      const name = actor.fullName || actor.userName || actor.email || "Someone";
+      const recipientIds = [...(actor.path || []), actor.managerId].filter(Boolean);
+
+      notifyUsers({
+        from: actor._id,
+        recipientIds,
+        title: `${name} uploaded sales`,
+        subtitle: `${createdRecords.length} records for ${Number(req.body.month)}/${Number(req.body.year)}`,
+        routeName: "SalesOverview",
+        payload: { batchId: String(batch._id) },
+        category: "sales",
+      }).catch(() => {});
+    }
 
     setImmediate(() => {
       const actorId = req.currentUser._id;

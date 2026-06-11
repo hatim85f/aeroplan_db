@@ -183,7 +183,7 @@ const createTask = async ({ actor, body }) => {
     subtitle: `${getDisplayName(actor)} assigned you a ${task.priority} priority task`,
     routeName: "TaskDashboard",
     payload: { taskId: String(task._id) },
-    category: task.priority === "urgent" ? "task_urgent" : "task_assigned",
+    category: "tasks",
   });
 
   const obj = task.toObject();
@@ -495,7 +495,7 @@ const deleteTask = async ({ actor, id }) => {
     subtitle: `${getDisplayName(actor)} archived this task`,
     routeName: "MyTasks",
     payload: { taskId: String(task._id) },
-    category: "info",
+    category: "tasks",
   });
   return { archived: true, taskId: task._id };
 };
@@ -578,7 +578,7 @@ const removeAssignee = async ({ actor, id, userId }) => {
     subtitle: `${getDisplayName(actor)} removed you from this task`,
     routeName: "MyTasks",
     payload: { taskId: String(task._id) },
-    category: "info",
+    category: "tasks",
   });
   return { removed: true, task };
 };

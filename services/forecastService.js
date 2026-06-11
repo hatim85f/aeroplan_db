@@ -9,6 +9,7 @@ const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineRepIds } = require("../helpers/hierarchy");
+const { notifyUsers } = require("../helpers/notify");
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -845,6 +846,23 @@ const submitForecast = async ({ actor, forecastId }) => {
   forecast.forecastStatus = "submitted";
   forecast.updatedBy = actor._id;
   await forecast.save();
+
+  // Fire-and-forget: notify the actor's upline managers that a forecast was submitted.
+  (async () => {
+    const me = await User.findById(actor._id).select("_id fullName userName email path managerId").lean();
+    if (!me) return;
+    const name = me.fullName || me.userName || me.email || "A rep";
+    const recipientIds = [...(me.path || []), me.managerId].filter(Boolean);
+    await notifyUsers({
+      from: me._id,
+      recipientIds,
+      title: `${name} submitted a forecast`,
+      subtitle: `${MONTH_NAMES[(forecast.month || 1) - 1] || ""} ${forecast.year || ""}`.trim(),
+      routeName: "ForecastTeam",
+      payload: { forecastId: String(forecast._id) },
+      category: "forecast",
+    });
+  })().catch(() => {});
 
   return serializeForecast(forecast);
 };

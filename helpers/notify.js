@@ -9,20 +9,21 @@ const { createAndSendNotification } = require("./notificationDispatcher");
  *
  * Keep these keys in sync with the mobile app's channel registration.
  */
-// Currently one custom sound (tasks.wav) is bundled and used for all task
-// notifications. Non-task categories use the system default until their own
-// .wav files are added — then give each its own sound/channel here and in the
-// mobile NOTIFICATION_CHANNELS map.
+// Domain-based notification sounds. Each domain's sound covers ALL events in
+// that domain. Keep these keys + sound file names in sync with the mobile app's
+// NOTIFICATION_CHANNELS map and the expo-notifications `sounds` list in app.json.
+// Events without a domain sound use "general" (the system default tone).
 const CATEGORIES = {
-  task_assigned: { sound: "tasks.wav", channelId: "tasks-new" },
-  task_message: { sound: "tasks.wav", channelId: "messages" },
-  task_reminder: { sound: "tasks.wav", channelId: "reminders" },
-  task_urgent: { sound: "tasks.wav", channelId: "urgent" },
-  update: { sound: "default", channelId: "updates" },
-  info: { sound: "default", channelId: "general" },
+  tasks: { sound: "tasks.wav", channelId: "tasks" },
+  planning: { sound: "plans.wav", channelId: "planning" },
+  forecast: { sound: "forecast.wav", channelId: "forecast" },
+  orders: { sound: "orders.wav", channelId: "orders" },
+  sales: { sound: "sales.wav", channelId: "sales" },
+  stocks: { sound: "stocks.wav", channelId: "stocks" },
+  general: { sound: "default", channelId: "general" },
 };
 
-const resolveCategory = (category) => CATEGORIES[category] || CATEGORIES.info;
+const resolveCategory = (category) => CATEGORIES[category] || CATEGORIES.general;
 
 /**
  * Send a notification to one or more users. Saves a Notification record per

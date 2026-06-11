@@ -9,6 +9,7 @@ const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineRepIds } = require("../helpers/hierarchy");
+const { notifyUsers } = require("../helpers/notify");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -68,6 +69,23 @@ const resolveTargetRep = async (actor, userId) => {
   if (!rep) throw makeError("Medical rep not found", 404);
   if (!canAccessUser(actor, rep)) throw makeError("You are not allowed to plan for this rep", 403);
   return { _id: rep._id, name: getDisplayName(rep), managerId: rep.managerId, teamId: rep.teamId };
+};
+
+// Fire-and-forget: notify the rep's upline managers when a visit plan is submitted.
+const notifyPlanSubmitted = (repId, action = "submitted their visit plan") => {
+  (async () => {
+    const me = await User.findById(repId).select("_id fullName userName email path managerId").lean();
+    if (!me) return;
+    const name = getDisplayName(me);
+    const recipientIds = [...(me.path || []), me.managerId].filter(Boolean);
+    await notifyUsers({
+      from: me._id,
+      recipientIds,
+      title: `${name} ${action}`,
+      routeName: "PlanningToday",
+      category: "planning",
+    });
+  })().catch(() => {});
 };
 
 /* ── Planning accounts ──────────────────────────── */
@@ -362,6 +380,11 @@ const createVisits = async ({ actor, userId, visits }) => {
     created.push(doc);
   }
 
+  // Notify upline managers only when visits were actually submitted (not drafts).
+  if (created.some((doc) => doc.planStatus === "submitted")) {
+    notifyPlanSubmitted(rep._id, "submitted their visit plan");
+  }
+
   return { createdCount: created.length, visits: created.map(serializeVisit) };
 };
 
@@ -458,6 +481,10 @@ const submitPlan = async ({ actor, userId, startDate, endDate, year, month }) =>
         $addToSet: { assignedMedicalRepIds: rep._id },
       },
     );
+  }
+
+  if (drafts.length > 0) {
+    notifyPlanSubmitted(rep._id, "submitted their visit plan");
   }
 
   return { submittedCount: drafts.length, accountsTouched: latestByAccount.size };

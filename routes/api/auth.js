@@ -685,4 +685,129 @@ router.post("/users/repair-hierarchy", backendAuth, async (req, res, next) => {
   }
 });
 
+// Change password for the logged-in user (requires the current password).
+router.patch("/me/change-password", backendAuth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: "currentPassword and newPassword are required" });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ success: false, message: "New password must be at least 8 characters" });
+    }
+
+    const user = await User.findById(req.backendUser.id).select("+passwordHash");
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    if (!user.passwordHash) {
+      return res.status(400).json({ success: false, message: "This account has no password set. Use Forgot Password to create one." });
+    }
+    const matches = await bcrypt.compare(String(currentPassword), user.passwordHash);
+    if (!matches) {
+      return res.status(400).json({ success: false, message: "Current password is incorrect" });
+    }
+
+    user.passwordHash = await bcrypt.hash(String(newPassword), 10);
+    user.lastActivityAt = new Date();
+    await user.save();
+
+    return res.status(200).json({ success: true, message: "Password changed successfully" });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// Delete (deactivate) the logged-in user's own account. Soft-deletes to preserve
+// historical data and hierarchy integrity; clears push tokens so devices stop receiving.
+router.delete("/me", backendAuth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.backendUser.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    user.isActive = false;
+    user.status = "inactive";
+    user.notificationTokens = [];
+    user.deactivatedAt = new Date();
+    await user.save();
+
+    return res.status(200).json({ success: true, message: "Your account has been deactivated." });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// Admin-only diagnostic: shows why a user can/can't see sales + whether push tokens exist.
+// Query by ?appId=AP-123 or ?userId=<id> or ?name=Mohamed
+router.get("/users/scope-debug", backendAuth, async (req, res, next) => {
+  try {
+    const currentUser = await User.findById(req.backendUser.id).select("_id role").lean();
+    if (!currentUser || currentUser.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Only admins can run the scope debug" });
+    }
+
+    const { appId, userId, name } = req.query;
+    const query = {};
+    if (userId) query._id = userId;
+    else if (appId) query.appId = String(appId).trim().toUpperCase();
+    else if (name) query.fullName = { $regex: String(name).trim(), $options: "i" };
+    else return res.status(400).json({ success: false, message: "Provide appId, userId, or name" });
+
+    const Account = require("../../models/Account");
+    const SalesUploadBatch = require("../../models/SalesUploadBatch");
+    const SalesRecord = require("../../models/SalesRecord");
+    const AccountRepAssignment = require("../../models/AccountRepAssignment");
+
+    const user = await User.findOne(query)
+      .select("_id fullName email role appId managerId path notificationTokens")
+      .lean();
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    const managersInPath = await User.find({ _id: { $in: user.path || [] } })
+      .select("_id fullName role").lean();
+    const [staticAccounts, coverageRows] = await Promise.all([
+      Account.find({ assignedMedicalRepIds: user._id }).select("_id").lean(),
+      AccountRepAssignment.find({ userId: user._id, isActive: { $ne: false } }).select("accountId").lean(),
+    ]);
+    const accIdSet = new Map();
+    staticAccounts.forEach((a) => accIdSet.set(String(a._id), a._id));
+    coverageRows.forEach((c) => { if (c.accountId) accIdSet.set(String(c.accountId), c.accountId); });
+    const assignedAccountIds = [...accIdSet.values()];
+    const managerIds = [...(user.path || []), user.managerId].filter(Boolean);
+    const [salesOnAssigned, batchesByManagers, ownBatches] = await Promise.all([
+      assignedAccountIds.length ? SalesRecord.countDocuments({ accountId: { $in: assignedAccountIds }, isActive: true }) : 0,
+      managerIds.length ? SalesUploadBatch.countDocuments({ uploadedBy: { $in: managerIds } }) : 0,
+      SalesUploadBatch.countDocuments({ uploadedBy: user._id }),
+    ]);
+
+    const reasons = [];
+    if (!user.managerId) reasons.push("No managerId set (not under a manager).");
+    if (!(user.path || []).length) reasons.push("Empty hierarchy path — run /users/repair-hierarchy, but only helps if managerId is set.");
+    if (!assignedAccountIds.length) reasons.push("No accounts assigned via either Account.assignedMedicalRepIds or AccountRepAssignment coverage.");
+    else if (!salesOnAssigned) reasons.push("Accounts are assigned, but no SalesRecord has accountId matching them — the uploaded sales were never matched to these accounts (account-name mismatch at upload).");
+    if (!batchesByManagers) reasons.push("No sales batches uploaded by this rep's managers.");
+    const willSeeSales = (assignedAccountIds.length > 0 && salesOnAssigned > 0) || batchesByManagers > 0;
+
+    return res.status(200).json({
+      success: true,
+      message: "Scope debug",
+      data: {
+        user: {
+          id: user._id, name: user.fullName, email: user.email, role: user.role,
+          appId: user.appId, managerId: user.managerId, pathLength: (user.path || []).length,
+        },
+        managersInPath: managersInPath.map((m) => ({ id: m._id, name: m.fullName, role: m.role })),
+        assignedAccountsCount: assignedAccountIds.length,
+        salesRecordsOnAssignedAccounts: salesOnAssigned,
+        batchesUploadedByManagers: batchesByManagers,
+        ownUploadedBatches: ownBatches,
+        registeredPushDevices: (user.notificationTokens || []).length,
+        willSeeSales,
+        likelyReasons: willSeeSales ? [] : reasons,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;

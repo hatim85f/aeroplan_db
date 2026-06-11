@@ -103,6 +103,7 @@ app.use('/api/account-assignments', accountAssignmentRoutes);
 app.use('/api/stock-accounts', stockAccountRoutes);
 app.use('/api/planning', planningRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/feedback', require('./routes/api/feedback'));
 app.use('/products', productRoutes);
 
 app.use((req, res) => {

@@ -11,6 +11,7 @@ const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
 const { getDownlineUserIds } = require("../../helpers/hierarchy");
+const { notifyUsers } = require("../../helpers/notify");
 
 const router = express.Router();
 
@@ -583,6 +584,30 @@ router.post("/", auth, loadOrderActor, async (req, res, next) => {
           throw error;
         }
       }
+    }
+
+    if (order) {
+      // Fire-and-forget: notify the creator's upline managers (plus the
+      // on-behalf rep if distinct) that a new order was created.
+      const actor = req.currentUser;
+      const name = actor.fullName || actor.userName || actor.email || "Someone";
+      const recipientIds = [...(actor.path || []), actor.managerId].filter(Boolean);
+
+      if (order.medicalRepId && String(order.medicalRepId) !== String(actor._id)) {
+        recipientIds.push(order.medicalRepId);
+      }
+
+      notifyUsers({
+        from: actor._id,
+        recipientIds,
+        title: `New order by ${name}`,
+        subtitle: order.orderNumber
+          ? `${order.orderNumber}`
+          : undefined,
+        routeName: "Orders",
+        payload: { orderId: String(order._id) },
+        category: "orders",
+      }).catch(() => {});
     }
 
     return res.status(201).json({

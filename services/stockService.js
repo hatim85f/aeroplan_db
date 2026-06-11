@@ -5,8 +5,10 @@ const Product = require("../models/Product");
 const SalesRecord = require("../models/SalesRecord");
 const StockAccount = require("../models/StockAccount");
 const StockUpdate = require("../models/StockUpdate");
+const User = require("../models/User");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineUserIds } = require("../helpers/hierarchy");
+const { notifyUsers } = require("../helpers/notify");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -530,6 +532,22 @@ const createStockUpdate = async ({ actor, stockAccountId, items }) => {
     managerId: stockAccount.managerId,
     items: updateItems,
   });
+
+  // Fire-and-forget: notify the actor's upline managers about the stock update.
+  (async () => {
+    const me = await User.findById(actor._id).select("_id fullName userName email path managerId").lean();
+    if (!me) return;
+    const name = getDisplayName(me);
+    const recipientIds = [...(me.path || []), me.managerId].filter(Boolean);
+    await notifyUsers({
+      from: me._id,
+      recipientIds,
+      title: `${name} updated stock for ${stockAccount.accountName}`,
+      routeName: "StockAccounts",
+      payload: { stockAccountId: String(stockAccount._id) },
+      category: "stocks",
+    });
+  })().catch(() => {});
 
   return stockUpdate;
 };
