@@ -35,6 +35,17 @@ const linksSchema = new Schema(
   { _id: false },
 );
 
+// Full light + dark theme palettes. defaultMode is the theme a user gets before
+// they pick one in Settings ("light", "dark", or "system").
+const themeSchema = new Schema(
+  {
+    defaultMode: { type: String, enum: ["light", "dark", "system"], default: "light" },
+    light: { type: colorsSchema, default: () => ({}) },
+    dark: { type: colorsSchema, default: () => ({}) },
+  },
+  { _id: false },
+);
+
 const appMainDetailsSchema = new Schema(
   {
     key: {
@@ -71,13 +82,39 @@ const appMainDetailsSchema = new Schema(
       type: String,
       trim: true,
     },
+    favIconWeb: {
+      type: String,
+      trim: true,
+    },
+    appIcon: {
+      type: String,
+      trim: true,
+    },
+    splashImage: {
+      type: String,
+      trim: true,
+    },
     colors: {
       type: colorsSchema,
+      default: () => ({}),
+    },
+    theme: {
+      type: themeSchema,
       default: () => ({}),
     },
     appVersion: {
       type: String,
       default: "1.0.0",
+      trim: true,
+    },
+    buildNumber: {
+      type: String,
+      default: "1",
+      trim: true,
+    },
+    copyright: {
+      type: String,
+      default: "© 2026 AeroPlan. All rights reserved.",
       trim: true,
     },
     minimumSupportedVersion: {
