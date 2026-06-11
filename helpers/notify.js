@@ -50,7 +50,7 @@ const notifyUsers = async ({
   if (!ids.length) return [];
 
   const { sound, channelId } = resolveCategory(category);
-  const recipients = await User.find({ _id: { $in: ids } }).select("_id notificationTokens").lean();
+  const recipients = await User.find({ _id: { $in: ids } }).select("_id notificationTokens pushTokens").lean();
 
   const results = await Promise.allSettled(
     recipients.map((recipient) => createAndSendNotification({

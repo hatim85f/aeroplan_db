@@ -46,22 +46,34 @@ router.post("/register-token", auth, async (req, res, next) => {
       });
     }
 
-    user.notificationTokens = (user.notificationTokens || []).filter(
-      (item) => item.token !== token && (!deviceId || item.deviceId !== deviceId),
-    );
-    user.notificationTokens.push({
+    const pushToken = {
       token,
       platform,
       deviceId,
       lastUsedAt: new Date(),
-    });
-    await user.save();
+    };
+    const pullMatches = [{ token }];
+
+    if (deviceId) {
+      pullMatches.push({ deviceId });
+    }
+
+    await User.updateOne(
+      { _id: user._id },
+      { $pull: { notificationTokens: { $or: pullMatches } } },
+    );
+    const updatedUser = await User.findByIdAndUpdate(
+      user._id,
+      { $addToSet: { notificationTokens: pushToken } },
+      { new: true },
+    );
 
     return res.status(200).json({
       success: true,
       message: "Notification token registered successfully",
       data: {
-        notificationTokens: user.notificationTokens,
+        notificationTokens: updatedUser.notificationTokens,
+        pushTokens: updatedUser.notificationTokens,
       },
     });
   } catch (error) {
@@ -89,16 +101,18 @@ router.delete("/remove-token", auth, async (req, res, next) => {
       });
     }
 
-    user.notificationTokens = (user.notificationTokens || []).filter((item) => {
-      return token ? item.token !== token : item.deviceId !== deviceId;
-    });
-    await user.save();
+    await User.updateOne(
+      { _id: user._id },
+      { $pull: { notificationTokens: token ? { token } : { deviceId } } },
+    );
+    const updatedUser = await getCurrentUser(user._id);
 
     return res.status(200).json({
       success: true,
       message: "Notification token removed successfully",
       data: {
-        notificationTokens: user.notificationTokens,
+        notificationTokens: updatedUser.notificationTokens,
+        pushTokens: updatedUser.notificationTokens,
       },
     });
   } catch (error) {
