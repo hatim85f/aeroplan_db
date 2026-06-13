@@ -601,6 +601,7 @@ router.post("/", auth, loadOrderActor, async (req, res, next) => {
         from: actor._id,
         recipientIds,
         title: `New order by ${name}`,
+        selfTitle: "Your order was created",
         subtitle: order.orderNumber
           ? `${order.orderNumber}`
           : undefined,

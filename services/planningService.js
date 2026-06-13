@@ -72,7 +72,7 @@ const resolveTargetRep = async (actor, userId) => {
 };
 
 // Fire-and-forget: notify the rep's upline managers when a visit plan is submitted.
-const notifyPlanSubmitted = (repId, action = "submitted their visit plan") => {
+const notifyPlanSubmitted = (repId, action = "submitted their visit plan", selfAction = "submitted your visit plan") => {
   (async () => {
     const me = await User.findById(repId).select("_id fullName userName email path managerId").lean();
     if (!me) return;
@@ -82,6 +82,7 @@ const notifyPlanSubmitted = (repId, action = "submitted their visit plan") => {
       from: me._id,
       recipientIds,
       title: `${name} ${action}`,
+      selfTitle: `You ${selfAction}`,
       routeName: "PlanningToday",
       category: "planning",
     });

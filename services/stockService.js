@@ -543,6 +543,7 @@ const createStockUpdate = async ({ actor, stockAccountId, items }) => {
       from: me._id,
       recipientIds,
       title: `${name} updated stock for ${stockAccount.accountName}`,
+      selfTitle: `You updated stock for ${stockAccount.accountName}`,
       routeName: "StockAccounts",
       payload: { stockAccountId: String(stockAccount._id) },
       category: "stocks",

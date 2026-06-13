@@ -2257,6 +2257,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
         from: actor._id,
         recipientIds,
         title: `${name} uploaded sales`,
+        selfTitle: "You uploaded sales",
         subtitle: `${createdRecords.length} records for ${Number(req.body.month)}/${Number(req.body.year)}`,
         routeName: "SalesOverview",
         payload: { batchId: String(batch._id) },

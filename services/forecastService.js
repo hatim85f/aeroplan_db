@@ -857,6 +857,7 @@ const submitForecast = async ({ actor, forecastId }) => {
       from: me._id,
       recipientIds,
       title: `${name} submitted a forecast`,
+      selfTitle: "You submitted a forecast",
       subtitle: `${MONTH_NAMES[(forecast.month || 1) - 1] || ""} ${forecast.year || ""}`.trim(),
       routeName: "ForecastTeam",
       payload: { forecastId: String(forecast._id) },
