@@ -5,6 +5,8 @@ const jwt = require("jsonwebtoken");
 const defaults = require("../../config/default.json");
 const User = require("../../models/User");
 const Team = require("../../models/Team");
+const Notification = require("../../models/Notification");
+const TeamInvitation = require("../../models/TeamInvitation");
 const { createAppId } = require("../../helpers/appId");
 const { isManagerRole } = require("../../helpers/roles");
 const { repairHierarchyPaths } = require("../../helpers/hierarchy");
@@ -758,16 +760,30 @@ router.patch("/me/change-password", backendAuth, async (req, res, next) => {
 // historical data and hierarchy integrity; clears push tokens so devices stop receiving.
 router.delete("/me", backendAuth, async (req, res, next) => {
   try {
-    const user = await User.findById(req.backendUser.id);
+    const userId = req.backendUser.id;
+    const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    user.isActive = false;
-    user.status = "inactive";
-    user.notificationTokens = [];
-    user.deactivatedAt = new Date();
-    await user.save();
+    // Best-effort cleanup of the user's personal data and references (non-fatal).
+    // Company business records (sales, orders, etc.) are intentionally retained.
+    await Promise.allSettled([
+      Notification.deleteMany({ $or: [{ to: userId }, { from: userId }] }),
+      TeamInvitation.deleteMany({ $or: [{ toUserId: userId }, { fromManagerId: userId }] }),
+      // Detach this user from any direct reports' hierarchy.
+      User.updateMany(
+        { managerId: userId },
+        { $unset: { managerId: "" }, $pull: { path: userId } },
+      ),
+    ]);
 
-    return res.status(200).json({ success: true, message: "Your account has been deactivated." });
+    // Permanently delete the account. This blocks any future sign-in since the
+    // user no longer exists (login returns "Invalid email or password").
+    await User.deleteOne({ _id: userId });
+
+    return res.status(200).json({
+      success: true,
+      message: "Your account and personal data have been permanently deleted.",
+    });
   } catch (error) {
     return next(error);
   }
