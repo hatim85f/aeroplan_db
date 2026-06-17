@@ -8,6 +8,10 @@ const Team = require("../../models/Team");
 const { createAppId } = require("../../helpers/appId");
 const { isManagerRole } = require("../../helpers/roles");
 const { repairHierarchyPaths } = require("../../helpers/hierarchy");
+const {
+  sendVerificationCodeEmail,
+  sendPasswordResetEmail,
+} = require("../../helpers/email");
 
 const router = express.Router();
 const CODE_EXPIRY_MINUTES = 15;
@@ -257,6 +261,17 @@ router.post("/register", async (req, res, next) => {
       onlineStatus: "online",
     });
 
+    try {
+      await sendVerificationCodeEmail({
+        to: normalizedEmail,
+        code: verification.code,
+        name: fullName,
+        expiryMinutes: CODE_EXPIRY_MINUTES,
+      });
+    } catch (mailError) {
+      console.error("Failed to send verification email:", mailError.message);
+    }
+
     return res.status(201).json(addDevelopmentCode({
       success: true,
       message: "User registered successfully. Verification code sent.",
@@ -377,6 +392,17 @@ router.post("/resend-verification-code", async (req, res, next) => {
     user.verificationCodeSentAt = verification.sentAt;
     await user.save();
 
+    try {
+      await sendVerificationCodeEmail({
+        to: user.email,
+        code: verification.code,
+        name: user.fullName,
+        expiryMinutes: CODE_EXPIRY_MINUTES,
+      });
+    } catch (mailError) {
+      console.error("Failed to send verification email:", mailError.message);
+    }
+
     return res.status(200).json(addDevelopmentCode({
       success: true,
       message: "Verification code sent successfully",
@@ -413,6 +439,17 @@ router.post("/forgot-password", async (req, res, next) => {
     user.passwordResetCodeExpiresAt = reset.expiresAt;
     user.passwordResetCodeSentAt = reset.sentAt;
     await user.save();
+
+    try {
+      await sendPasswordResetEmail({
+        to: user.email,
+        code: reset.code,
+        name: user.fullName,
+        expiryMinutes: CODE_EXPIRY_MINUTES,
+      });
+    } catch (mailError) {
+      console.error("Failed to send password reset email:", mailError.message);
+    }
 
     return res.status(200).json(addDevelopmentCode({
       success: true,
