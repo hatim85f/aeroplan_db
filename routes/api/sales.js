@@ -674,6 +674,7 @@ const createPlaceholderAccount = async (row, user) => {
     location: {
       address: "Placeholder - please update",
     },
+    organizationId: resolveOrgId(user),
     createdBy: user?._id,
   });
 
