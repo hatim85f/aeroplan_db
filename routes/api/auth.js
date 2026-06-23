@@ -7,6 +7,7 @@ const User = require("../../models/User");
 const Team = require("../../models/Team");
 const Notification = require("../../models/Notification");
 const TeamInvitation = require("../../models/TeamInvitation");
+const Organization = require("../../models/Organization");
 const { createAppId } = require("../../helpers/appId");
 const { isManagerRole } = require("../../helpers/roles");
 const { repairHierarchyPaths } = require("../../helpers/hierarchy");
@@ -99,6 +100,7 @@ const buildHierarchy = async (managerId) => {
     return {
       managerId: undefined,
       path: [],
+      organizationId: undefined,
     };
   }
 
@@ -113,6 +115,7 @@ const buildHierarchy = async (managerId) => {
   return {
     managerId: manager._id,
     path: [...(manager.path || []), manager._id],
+    organizationId: manager.organizationId,
   };
 };
 
@@ -241,6 +244,18 @@ router.post("/register", async (req, res, next) => {
     }
 
     const hierarchy = await buildHierarchy(managerId);
+    // Join the manager's organization, or — for the first manager of a brand-new
+    // company (no manager) — create a fresh hidden organization to own the tenant.
+    let organizationId = hierarchy.organizationId;
+    let newOrganization = null;
+    if (!organizationId) {
+      newOrganization = await Organization.create({
+        name: fullName ? `${fullName}'s organization` : normalizedEmail,
+        status: "active",
+        isHidden: true,
+      });
+      organizationId = newOrganization._id;
+    }
     const passwordHash = await bcrypt.hash(password, 10);
     const now = new Date();
     const verification = createCodePayload();
@@ -248,6 +263,7 @@ router.post("/register", async (req, res, next) => {
       email: normalizedEmail,
       appId: await createUniqueAppId(),
       passwordHash,
+      organizationId,
       verificationCodeHash: verification.codeHash,
       verificationCodeExpiresAt: verification.expiresAt,
       verificationCodeSentAt: verification.sentAt,
@@ -263,6 +279,13 @@ router.post("/register", async (req, res, next) => {
       lastActivityAt: now,
       onlineStatus: "online",
     });
+
+    if (newOrganization) {
+      await Organization.updateOne(
+        { _id: newOrganization._id },
+        { $set: { ownerUserId: user._id } },
+      );
+    }
 
     try {
       await sendVerificationCodeEmail({

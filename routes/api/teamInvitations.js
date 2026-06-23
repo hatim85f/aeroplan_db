@@ -5,6 +5,7 @@ const User = require("../../models/User");
 const Line = require("../../models/Line");
 const { createAndSendNotification } = require("../../helpers/notificationDispatcher");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 const normalizeLineId = (lineId) => String(lineId || "").trim().toUpperCase();
@@ -107,6 +108,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
     const invitation = await TeamInvitation.create({
       fromManagerId: req.user.id,
       toUserId: invitedUser._id,
+      organizationId: resolveOrgId(req.user),
       lineId: normalizedLineId,
       lineName: line.lineName,
       message,
@@ -211,6 +213,10 @@ router.patch("/:id/accept", auth, async (req, res, next) => {
 
     currentUser.lineId = acceptedLineId;
     currentUser.lastActivityAt = new Date();
+    // Inherit the inviting manager's organization (tenant boundary).
+    if (manager) {
+      currentUser.organizationId = resolveOrgId(manager);
+    }
     const user = await currentUser.save();
 
     await Line.findOneAndUpdate(

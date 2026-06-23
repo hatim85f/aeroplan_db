@@ -6,6 +6,7 @@ const TeamInvitation = require("../../models/TeamInvitation");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { getDownlineUserIds } = require("../../helpers/hierarchy");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -284,6 +285,8 @@ const buildTeamQuery = async (user, query) => {
     teamQuery = { members: user._id };
   }
 
+  teamQuery.organizationId = resolveOrgId(user);
+
   if (query.lineId) {
     const normalizedLineId = normalizeLineId(query.lineId);
     teamQuery.$or = [
@@ -397,7 +400,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       area,
       managerId: req.user.id,
       createdBy: req.user.id,
-      organizationId,
+      organizationId: resolveOrgId(req.user),
       members: [],
       status,
       isActive,

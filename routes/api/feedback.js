@@ -2,6 +2,7 @@ const express = require("express");
 const auth = require("../../middleware/auth");
 const Feedback = require("../../models/Feedback");
 const User = require("../../models/User");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -17,6 +18,7 @@ router.post("/", auth, async (req, res, next) => {
 
     const feedback = await Feedback.create({
       userId: req.user.id,
+      organizationId: resolveOrgId(req.user),
       userName: user?.fullName,
       userEmail: user?.email,
       userRole: user?.role,
