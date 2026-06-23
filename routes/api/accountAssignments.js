@@ -8,6 +8,7 @@ const User = require("../../models/User");
 const forecastService = require("../../services/forecastService");
 const { isManagerRole } = require("../../helpers/roles");
 const { getDownlineRepIds } = require("../../helpers/hierarchy");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -53,7 +54,7 @@ const parseDateValue = (value, fieldName, { required = false } = {}) => {
 // List assignments (filters: accountId, userId)
 router.get("/", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    const query = { isActive: true };
+    const query = { isActive: true, organizationId: resolveOrgId(req.currentUser) };
 
     if (req.query.accountId && isValidObjectId(req.query.accountId)) {
       query.accountId = req.query.accountId;
@@ -82,7 +83,7 @@ router.get("/", auth, loadActor, requireManager, async (req, res, next) => {
 // historical coverage must reference reps who have since left.
 router.get("/reps", auth, loadActor, requireManager, async (req, res, next) => {
   try {
-    const query = { role: "representative" };
+    const query = { role: "representative", organizationId: resolveOrgId(req.currentUser) };
 
     if (req.currentUser.role !== "admin") {
       const downlineRepIds = await getDownlineRepIds(req.currentUser._id);
@@ -146,6 +147,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
           startDate,
           endDate,
           notes: req.body.notes,
+          organizationId: resolveOrgId(req.currentUser),
           createdBy: req.currentUser._id,
           updatedBy: req.currentUser._id,
         });

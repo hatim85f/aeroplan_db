@@ -9,6 +9,7 @@ const User = require("../models/User");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineUserIds } = require("../helpers/hierarchy");
 const { notifyUsers } = require("../helpers/notify");
+const { resolveOrgId } = require("../helpers/tenancy");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -29,17 +30,19 @@ const getDisplayName = (user = {}) =>
  * - rep: stock accounts under their manager's scope or created by them
  */
 const buildScopeQuery = async (actor) => {
-  if (actor.role === "admin") return {};
+  const org = { organizationId: resolveOrgId(actor) };
+
+  if (actor.role === "admin") return org;
 
   if (isManagerRole(actor.role)) {
     const downlineIds = await getDownlineUserIds(actor._id);
-    return { $or: [{ managerId: { $in: downlineIds } }, { createdBy: actor._id }] };
+    return { ...org, $or: [{ managerId: { $in: downlineIds } }, { createdBy: actor._id }] };
   }
 
   const branches = [{ createdBy: actor._id }];
   if (actor.managerId) branches.push({ managerId: actor.managerId });
   if (actor.teamId) branches.push({ teamId: actor.teamId });
-  return { $or: branches };
+  return { ...org, $or: branches };
 };
 
 const getScopedStockAccount = async (actor, stockAccountId) => {
@@ -230,6 +233,7 @@ const createStockAccount = async ({ actor, body }) => {
     : [];
 
   const stockAccount = await StockAccount.create({
+    organizationId: resolveOrgId(actor),
     accountId,
     accountName,
     isCustomAccount: !accountId,
@@ -523,6 +527,7 @@ const createStockUpdate = async ({ actor, stockAccountId, items }) => {
   });
 
   const stockUpdate = await StockUpdate.create({
+    organizationId: resolveOrgId(actor),
     stockAccountId: stockAccount._id,
     stockAccountName: stockAccount.accountName,
     updateDate: new Date(),

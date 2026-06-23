@@ -4,6 +4,7 @@ const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
 const AccountFocOverride = require("../../models/AccountFocOverride");
 const Product = require("../../models/Product");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -211,7 +212,7 @@ router.get("/", auth, async (req, res, next) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const skip = (page - 1) * limit;
-    const query = {};
+    const query = { organizationId: resolveOrgId(req.user) };
 
     if (req.query.accountId) {
       if (!isValidObjectId(req.query.accountId)) {
@@ -303,6 +304,7 @@ router.post("/", auth, async (req, res, next) => {
       {
         $setOnInsert: {
           accountId,
+          organizationId: resolveOrgId(req.user),
           createdBy: req.user.id,
         },
         $set: {

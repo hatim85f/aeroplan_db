@@ -9,6 +9,7 @@ const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineUserIds } = require("../helpers/hierarchy");
 const { notifyUsers } = require("../helpers/notify");
+const { resolveOrgId } = require("../helpers/tenancy");
 
 // Fire-and-forget notification — never let a notification failure break a task operation.
 const fireNotify = (opts) => { notifyUsers(opts).catch(() => {}); };
@@ -93,7 +94,7 @@ const recalcChecklist = (task) => {
 };
 
 const logActivity = (taskId, actor, action, message, metadata) =>
-  TaskActivity.create({ taskId, actorId: actor._id, actorName: getDisplayName(actor), action, message, metadata });
+  TaskActivity.create({ taskId, organizationId: resolveOrgId(actor), actorId: actor._id, actorName: getDisplayName(actor), action, message, metadata });
 
 /* ── Create ─────────────────────────────────────── */
 
@@ -137,6 +138,7 @@ const createTask = async ({ actor, body }) => {
     description: body.description,
     taskType: body.taskType,
     assignedUsers,
+    organizationId: resolveOrgId(actor),
     createdBy: actor._id,
     createdByName: getDisplayName(actor),
     createdByRole: actor.role,
@@ -290,6 +292,7 @@ const buildListQuery = (params) => {
 
 const listMyTasks = async ({ actor, ...params }) => {
   const query = buildListQuery(params);
+  query.organizationId = resolveOrgId(actor);
   query["assignedUsers"] = { $elemMatch: { userId: actor._id, status: "active" } };
   const tasks = await Task.find(query).sort({ dueDate: 1, createdAt: -1 }).limit(500).lean();
   const { counts, last } = await attachCommentMeta(tasks);
@@ -299,6 +302,7 @@ const listMyTasks = async ({ actor, ...params }) => {
 const listTeamTasks = async ({ actor, userId, ...params }) => {
   if (!isManagerRole(actor.role)) throw makeError("Only managers can view team tasks", 403);
   const query = buildListQuery(params);
+  query.organizationId = resolveOrgId(actor);
   const repIds = await getAccessibleRepIds(actor);
 
   if (userId && isValidObjectId(userId)) {
@@ -332,6 +336,7 @@ const ensureOccurrence = async (task, userEntry, period) => {
   if (!occ) {
     occ = await TaskOccurrence.create({
       taskId: task._id,
+      organizationId: task.organizationId,
       userId: userEntry.userId,
       userName: userEntry.userName,
       periodType: period.periodType,
@@ -713,6 +718,7 @@ const sendMessage = async ({ actor, id, body }) => {
 
   const message = await TaskMessage.create({
     taskId: task._id,
+    organizationId: resolveOrgId(actor),
     senderId: actor._id,
     senderName: getDisplayName(actor),
     senderRole: actor.role,

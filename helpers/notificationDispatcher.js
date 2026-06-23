@@ -1,5 +1,6 @@
 const Notification = require("../models/Notification");
 const { sendExpoPushNotifications } = require("./expoPush");
+const { resolveOrgId } = require("./tenancy");
 
 const createAndSendNotification = async ({
   from,
@@ -19,6 +20,7 @@ const createAndSendNotification = async ({
     payload,
     from,
     to,
+    organizationId: recipient ? resolveOrgId(recipient) : undefined,
     timeStamp: new Date(),
   });
 

@@ -1581,7 +1581,7 @@ const persistUploadColumnMapping = async (body, columnMapping, user, existingMap
   const sourceType = String(body.sourceType || body.mappingSourceType || "sales_upload").trim();
   const isDefault = normalizeBoolean(body.saveMappingAsDefault ?? body.isDefaultMapping ?? true, true);
   const mappingSignature = stableStringify(columnMapping);
-  const existingMappings = await SalesSheetMapping.find({ sourceType, status: "active" });
+  const existingMappings = await SalesSheetMapping.find({ sourceType, status: "active", organizationId: resolveOrgId(user) });
   const matchingMapping = existingMappings.find((candidate) => (
     stableStringify(candidate.columnMapping || {}) === mappingSignature
   ));
@@ -1612,6 +1612,7 @@ const persistUploadColumnMapping = async (body, columnMapping, user, existingMap
     status: "active",
     columnMapping,
     requiredColumns: Array.isArray(body.requiredColumns) ? body.requiredColumns : [],
+    organizationId: resolveOrgId(user),
     createdBy: user._id,
     updatedBy: user._id,
   });
@@ -1757,7 +1758,7 @@ const buildDetectionRuleQuery = (queryParams = {}) => {
 router.post("/detection-rules", auth, loadSalesActor, requireManager, async (req, res, next) => {
   try {
     const payload = await normalizeDetectionRulePayload(req.body, req.currentUser);
-    const rule = await SalesDetectionRule.create(payload);
+    const rule = await SalesDetectionRule.create({ ...payload, organizationId: resolveOrgId(req.currentUser) });
 
     return res.status(201).json({
       success: true,
@@ -1774,7 +1775,7 @@ router.get("/detection-rules", auth, loadSalesActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
-    const query = buildDetectionRuleQuery(req.query);
+    const query = { ...buildDetectionRuleQuery(req.query), organizationId: resolveOrgId(req.currentUser) };
     const [rules, total] = await Promise.all([
       SalesDetectionRule.find(query)
         .populate("channelId", "channelName channelKey channelGroup")
@@ -3709,6 +3710,7 @@ router.post("/mappings", auth, loadSalesActor, requireManager, async (req, res, 
     const mapping = await SalesSheetMapping.create({
       ...payload,
       status: payload.status || "active",
+      organizationId: resolveOrgId(req.currentUser),
       createdBy: req.currentUser._id,
       updatedBy: req.currentUser._id,
     });
@@ -3723,7 +3725,7 @@ router.get("/mappings", auth, loadSalesActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const query = {};
+    const query = { organizationId: resolveOrgId(req.currentUser) };
 
     if (req.query.status) {
       query.status = req.query.status;

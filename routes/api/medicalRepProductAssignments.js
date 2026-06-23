@@ -4,6 +4,7 @@ const auth = require("../../middleware/auth");
 const Product = require("../../models/Product");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
 const { getDownlineRepIds } = require("../../helpers/hierarchy");
 
@@ -355,6 +356,7 @@ const buildRepQuery = async (user, queryParams = {}) => {
   const query = {
     role: "representative",
     "assignedProducts.0": { $exists: true },
+    organizationId: resolveOrgId(user),
   };
   const accessibleRepIds = await getAccessibleRepIds(user);
 

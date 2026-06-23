@@ -5,6 +5,7 @@ const Account = require("../../models/Account");
 const SalesTeamMember = require("../../models/SalesTeamMember");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -232,7 +233,7 @@ const syncSalesTeamMemberAccountLinks = async (memberId, accountIds) => {
 };
 
 const buildListQuery = (user, queryParams) => {
-  const query = {};
+  const query = { organizationId: resolveOrgId(user) };
 
   if (!isManagerRole(user.role)) {
     query.status = "active";
@@ -289,6 +290,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
 
     const member = await SalesTeamMember.create({
       ...payload,
+      organizationId: resolveOrgId(req.user),
       createdBy: req.user.id,
       updatedBy: req.user.id,
     });

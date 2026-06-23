@@ -10,6 +10,7 @@ const SalesTeamMember = require("../../models/SalesTeamMember");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
+const { resolveOrgId } = require("../../helpers/tenancy");
 const { getDownlineUserIds } = require("../../helpers/hierarchy");
 const { notifyUsers } = require("../../helpers/notify");
 
@@ -335,7 +336,7 @@ const calculateTotals = (items) => items.reduce((totals, item) => ({
 });
 
 const buildOrderQuery = async (user, queryParams) => {
-  const query = { isActive: true };
+  const query = { isActive: true, organizationId: resolveOrgId(user) };
   const accessibleRepIds = await getAccessibleRepIds(user);
 
   if (accessibleRepIds) {
@@ -557,6 +558,7 @@ router.post("/", auth, loadOrderActor, async (req, res, next) => {
 
       try {
         order = await Order.create({
+          organizationId: resolveOrgId(req.currentUser),
           orderNumber: await getOrderNumber(orderDate),
           account: {
             accountId: account._id,

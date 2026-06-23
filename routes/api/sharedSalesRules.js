@@ -9,6 +9,7 @@ const SharedSalesRule = require("../../models/SharedSalesRule");
 const User = require("../../models/User");
 const { buildRuleRecalculationInput, recalculateSharedSales } = require("../../helpers/sharedSales");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -391,6 +392,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
         ...payload,
         status: payload.status || "active",
         isActive: payload.isActive !== undefined ? payload.isActive : true,
+        organizationId: resolveOrgId(req.currentUser),
         createdBy: req.currentUser._id,
         updatedBy: req.currentUser._id,
       });
@@ -424,7 +426,7 @@ router.get("/", auth, loadActor, async (req, res, next) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const query = buildRuleQuery(req.query);
+    const query = { ...buildRuleQuery(req.query), organizationId: resolveOrgId(req.currentUser) };
     const includeInactive = String(req.query.includeInactive || "").trim().toLowerCase() === "true";
 
     if (!isManagerRole(req.currentUser.role)) {
