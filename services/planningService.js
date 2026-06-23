@@ -10,6 +10,7 @@ const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineRepIds } = require("../helpers/hierarchy");
 const { notifyUsers } = require("../helpers/notify");
+const { resolveOrgId } = require("../helpers/tenancy");
 
 const makeError = (message, statusCode = 400) => {
   const error = new Error(message);
@@ -92,7 +93,7 @@ const notifyPlanSubmitted = (repId, action = "submitted their visit plan", selfA
 /* ── Planning accounts ──────────────────────────── */
 
 const listPlanningAccounts = async ({ actor, search, userId, status }) => {
-  const query = { isActive: true };
+  const query = { isActive: true, organizationId: resolveOrgId(actor) };
 
   if (userId) {
     const rep = await resolveTargetRep(actor, userId);
@@ -186,6 +187,7 @@ const createPlanningAccount = async ({ actor, body }) => {
 
     return PlanningAccount.create({
       userId: rep._id,
+      organizationId: resolveOrgId(actor),
       userName: rep.name,
       managerId: rep.managerId,
       teamId: rep.teamId,
@@ -213,6 +215,7 @@ const createPlanningAccount = async ({ actor, body }) => {
 
   return PlanningAccount.create({
     userId: rep._id,
+    organizationId: resolveOrgId(actor),
     userName: rep.name,
     managerId: rep.managerId,
     teamId: rep.teamId,
@@ -362,6 +365,7 @@ const createVisits = async ({ actor, userId, visits }) => {
 
     const doc = await PlanningVisit.create({
       userId: rep._id,
+      organizationId: resolveOrgId(actor),
       userName: rep.name,
       managerId: rep.managerId,
       teamId: rep.teamId,

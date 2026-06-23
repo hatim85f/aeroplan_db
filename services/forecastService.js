@@ -10,6 +10,7 @@ const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineRepIds } = require("../helpers/hierarchy");
 const { notifyUsers } = require("../helpers/notify");
+const { resolveOrgId } = require("../helpers/tenancy");
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -479,6 +480,7 @@ const buildOrRefreshMonthlyForecast = async ({ actor, userId, year, month, prese
       forecastStatus: "draft",
       status: "active",
       isActive: true,
+      organizationId: resolveOrgId(actor),
       createdBy: actor._id,
       updatedBy: actor._id,
     });
@@ -558,6 +560,7 @@ const summarizeTeamForecasts = async ({ actor, year, month, userId }) => {
       isActive: true,
       startDate: { $lt: nextMonthStart },
       endDate: { $gte: monthStart },
+      organizationId: resolveOrgId(actor),
     }).distinct("userId");
     repIds = await getActiveRepIds(assignments.map((id) => String(id)));
   }
@@ -567,6 +570,7 @@ const summarizeTeamForecasts = async ({ actor, year, month, userId }) => {
     year: period.year,
     month: period.month,
     isActive: true,
+    organizationId: resolveOrgId(actor),
   });
   const existingByRepId = new Map(existingForecasts.map((forecast) => [String(forecast.userId), forecast]));
   const forecasts = [];

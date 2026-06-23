@@ -4,6 +4,7 @@ const auth = require("../../middleware/auth");
 const TargetPhasing = require("../../models/TargetPhasing");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -267,6 +268,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
     const payload = normalizePayload(req.body);
     const phasing = await TargetPhasing.create({
       ...payload,
+      organizationId: resolveOrgId(req.currentUser),
       createdBy: req.currentUser._id,
       updatedBy: req.currentUser._id,
     });
@@ -287,7 +289,7 @@ router.post("/", auth, loadActor, requireManager, async (req, res, next) => {
 
 router.get("/", auth, loadActor, async (req, res, next) => {
   try {
-    const query = buildQuery(req.query);
+    const query = { ...buildQuery(req.query), organizationId: resolveOrgId(req.currentUser) };
     const phasing = await populatePhasing(TargetPhasing.find(query).sort({ year: -1, createdAt: -1 }));
 
     return res.status(200).json({

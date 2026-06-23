@@ -9,6 +9,7 @@ const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
 const { canAccessUser } = require("../../helpers/hierarchyAccess");
 const { getDownlineRepIds } = require("../../helpers/hierarchy");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -357,7 +358,7 @@ const serializeTargetAssignment = (assignment) => {
 const serializeTargetAssignments = (assignments) => assignments.map(serializeTargetAssignment);
 
 const buildAssignmentQuery = async (user, queryParams = {}) => {
-  const query = {};
+  const query = { organizationId: resolveOrgId(user) };
   const accessibleRepIds = await getAccessibleRepIds(user);
 
   if (accessibleRepIds) {
@@ -470,6 +471,7 @@ const createAssignment = async ({ actor, body }) => {
     ...payload,
     status: "active",
     isActive: true,
+    organizationId: resolveOrgId(actor),
     createdBy: actor._id,
     updatedBy: actor._id,
   });
@@ -748,6 +750,7 @@ const upsertDerivedTarget = async (payload, actor) => {
     ...payload,
     status: "active",
     isActive: true,
+    organizationId: resolveOrgId(actor),
     createdBy: actor._id,
     updatedBy: actor._id,
   });

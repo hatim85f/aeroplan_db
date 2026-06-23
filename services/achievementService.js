@@ -9,6 +9,7 @@ const User = require("../models/User");
 const { canAccessUser } = require("../helpers/hierarchyAccess");
 const { isManagerRole } = require("../helpers/roles");
 const { getDownlineRepIds } = require("../helpers/hierarchy");
+const { resolveOrgId } = require("../helpers/tenancy");
 const { calculateMonthlyTarget } = require("./forecastService");
 
 const makeError = (message, statusCode = 400) => {
@@ -118,7 +119,9 @@ const resolveRepIds = async (actor, userId) => {
   }
 
   if (actor.role === "admin") {
-    const ids = await TargetAssignment.distinct("userId", { status: "active", isActive: true });
+    const ids = await TargetAssignment.distinct("userId", {
+      status: "active", isActive: true, organizationId: resolveOrgId(actor),
+    });
     return ids.map((id) => String(id));
   }
 
@@ -132,7 +135,7 @@ const resolveRepIds = async (actor, userId) => {
  * Everything is bulk-loaded (assignments, phasings, accounts, sales) and
  * aggregated in memory so the endpoint stays well under the Heroku timeout.
  */
-const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] }) => {
+const computeAchievement = async ({ repIds, year, month, scope, channelIds = [], organizationId }) => {
   let [assignments, defaultPhasings, repUsers, accounts, datedAssignments] = await Promise.all([
     TargetAssignment.find({
       userId: { $in: repIds },
@@ -145,6 +148,7 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
       status: "active",
       isActive: true,
       isDefault: true,
+      organizationId,
     }).sort({ createdAt: -1 }).lean(),
     User.find({ _id: { $in: repIds } }).select("_id fullName userName email status isActive").lean(),
     Account.find({ assignedMedicalRepIds: { $in: repIds } }).select("_id assignedMedicalRepIds").lean(),
@@ -321,6 +325,7 @@ const computeAchievement = async ({ repIds, year, month, scope, channelIds = [] 
     status: "active",
     isActive: true,
     productId: { $in: productIds },
+    organizationId,
   };
 
   if (singleRepScope) {
@@ -480,6 +485,7 @@ const getMyAchievement = async ({ actor, year, month, channelIds }) => {
     month: normalizeMonth(month),
     scope: "my",
     channelIds: parseChannelIds(channelIds),
+    organizationId: resolveOrgId(actor),
   });
 };
 
@@ -496,6 +502,7 @@ const getTeamAchievement = async ({ actor, year, month, userId, channelIds }) =>
     month: normalizeMonth(month),
     scope: "team",
     channelIds: parseChannelIds(channelIds),
+    organizationId: resolveOrgId(actor),
   });
 };
 
