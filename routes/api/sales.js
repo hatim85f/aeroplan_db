@@ -17,6 +17,7 @@ const { buildDuplicateKey, cleanupDuplicateSalesRecords } = require("../../helpe
 const { isManagerRole } = require("../../helpers/roles");
 const { getDownlineUserIds: getDownlineUserIdsBFS } = require("../../helpers/hierarchy");
 const { notifyUsers } = require("../../helpers/notify");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -398,8 +399,10 @@ const getAssignedAccountIds = async (scopedUserIds) => {
 };
 
 const getAccessibleSalesBatchQuery = async (user) => {
+  const orgFilter = { organizationId: resolveOrgId(user) };
+
   if (user.role === "admin") {
-    return {};
+    return orgFilter;
   }
 
   if (!isManagerRole(user.role)) {
@@ -412,7 +415,7 @@ const getAccessibleSalesBatchQuery = async (user) => {
     return { _id: null };
   }
 
-  return { uploadedBy: { $in: scopedUserIds } };
+  return { ...orgFilter, uploadedBy: { $in: scopedUserIds } };
 };
 
 const getBatchIdsUploadedBy = async (uploaderIds) => {
@@ -447,8 +450,10 @@ const getRequestedUploaderIds = async (queryParams = {}, user) => {
 };
 
 const getAccessibleSalesQuery = async (user) => {
+  const orgFilter = { organizationId: resolveOrgId(user) };
+
   if (user.role === "admin") {
-    return {};
+    return orgFilter;
   }
 
   const scopedUserIds = await getScopedUserIds(user);
@@ -469,7 +474,9 @@ const getAccessibleSalesQuery = async (user) => {
     return { _id: null };
   }
 
-  return accessBranches.length === 1 ? accessBranches[0] : { $or: accessBranches };
+  return accessBranches.length === 1
+    ? { ...orgFilter, ...accessBranches[0] }
+    : { ...orgFilter, $or: accessBranches };
 };
 
 const getScopedSalesRecord = async (recordId, user) => {
@@ -1972,6 +1979,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
     const batch = await SalesUploadBatch.create({
       fileName: req.body.fileName,
       uploadedBy: req.currentUser._id,
+      organizationId: resolveOrgId(req.currentUser),
       mappingId: mapping?._id,
       mappingName: mapping?.mappingName,
       uploadSessionId,
@@ -2161,6 +2169,7 @@ router.post("/upload", auth, loadSalesActor, requireManager, async (req, res, ne
 
         const record = new SalesRecord({
           salesUploadBatchId: batch._id,
+          organizationId: resolveOrgId(req.currentUser),
           entrySource: "upload",
           invoiceNumber: row.invoiceNumber,
           externalSalesReference: row.externalSalesReference,
@@ -2371,6 +2380,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
     const batch = await SalesUploadBatch.create({
       fileName: req.body.fileName || "Manual sales entry",
       uploadedBy: req.currentUser._id,
+      organizationId: resolveOrgId(req.currentUser),
       month: Number(req.body.month),
       year: Number(req.body.year),
       totalRows: manualItems.length,
@@ -2453,6 +2463,7 @@ router.post("/manual", auth, loadSalesActor, requireManager, async (req, res, ne
         const calculatedValues = buildCalculatedValues(quantity, pricing);
         const record = await SalesRecord.create({
           salesUploadBatchId: batch._id,
+          organizationId: resolveOrgId(req.currentUser),
           entrySource: "manual",
           invoiceNumber: item.invoiceNumber || req.body.invoiceNumber,
           externalSalesReference: item.externalSalesReference || req.body.externalSalesReference,

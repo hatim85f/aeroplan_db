@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const auth = require("../../middleware/auth");
 const Account = require("../../models/Account");
 const SalesTeamMember = require("../../models/SalesTeamMember");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -421,7 +422,7 @@ router.get("/", auth, async (req, res, next) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const skip = shouldPaginate ? (page - 1) * limit : 0;
-    const query = {};
+    const query = { organizationId: resolveOrgId(req.user) };
 
     if (req.query.search) {
       const search = String(req.query.search).trim();
@@ -489,7 +490,7 @@ router.get("/my-visits", auth, async (req, res, next) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const skip = (page - 1) * limit;
-    const query = { assignedMedicalRepIds: req.user.id };
+    const query = { assignedMedicalRepIds: req.user.id, organizationId: resolveOrgId(req.user) };
 
     const [accounts, total] = await Promise.all([
       populateAccount(
@@ -650,6 +651,7 @@ router.post("/bulk", auth, async (req, res, next) => {
 
       const account = await Account.create({
         ...payload,
+        organizationId: resolveOrgId(req.user),
         createdBy: req.user.id,
       });
 
@@ -801,8 +803,9 @@ router.post("/", auth, async (req, res, next) => {
     }
 
     const account = await Account.create({
-      ...payload,
-      createdBy: req.user.id,
+        ...payload,
+        organizationId: resolveOrgId(req.user),
+        createdBy: req.user.id,
     });
     await syncAccountSalesTeamLinks(account._id, payload.salesTeamIds);
     const populatedAccount = await populateAccount(Account.findById(account._id));

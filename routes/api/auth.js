@@ -27,6 +27,7 @@ const createBackendToken = (user) => {
     {
       id: user.id,
       email: user.email,
+      organizationId: user.organizationId,
       authProvider: "password",
     },
     getJwtSecret(),
