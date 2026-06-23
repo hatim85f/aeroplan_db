@@ -155,6 +155,7 @@ const createPlanningAccount = async ({ actor, body }) => {
       .filter((account) => !existingSet.has(String(account._id)))
       .map((account) => ({
         userId: rep._id,
+        organizationId: resolveOrgId(actor),
         userName: rep.name,
         managerId: rep.managerId,
         teamId: rep.teamId,

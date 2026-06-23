@@ -756,6 +756,7 @@ router.post("/bulk", auth, requireManager, async (req, res, next) => {
 
       productsToCreate.push({
         ...payload,
+        organizationId: resolveOrgId(req.user),
         createdBy: req.user.id,
       });
     }
