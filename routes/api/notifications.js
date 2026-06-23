@@ -4,6 +4,7 @@ const Notification = require("../../models/Notification");
 const User = require("../../models/User");
 const { isExpoPushToken } = require("../../helpers/expoPush");
 const { createAndSendNotification } = require("../../helpers/notificationDispatcher");
+const { CATEGORIES } = require("../../helpers/notify");
 
 const router = express.Router();
 
@@ -18,6 +19,8 @@ const normalizeRecipients = (to) => {
 const getCurrentUser = async (userId) => {
   return User.findById(userId);
 };
+
+const resolvePushCategory = (category) => CATEGORIES[category] || CATEGORIES.general;
 
 router.post("/register-token", auth, async (req, res, next) => {
   try {
@@ -183,8 +186,9 @@ router.patch("/:id/open", auth, async (req, res, next) => {
 
 router.post("/send", auth, async (req, res, next) => {
   try {
-    const { title, subtitle, routeName, payload = {}, to } = req.body;
+    const { title, subtitle, routeName, payload = {}, to, category = payload.category } = req.body;
     const recipientIds = normalizeRecipients(to);
+    const { sound, channelId } = resolvePushCategory(category);
 
     if (!title || !routeName || !recipientIds.length) {
       return res.status(400).json({
@@ -207,8 +211,10 @@ router.post("/send", auth, async (req, res, next) => {
           title,
           subtitle,
           routeName,
-          payload,
+          payload: { ...payload, category: category || "general" },
           recipient,
+          sound,
+          channelId,
         });
       }),
     );
