@@ -23,9 +23,9 @@ const sendExpoPushNotifications = async ({
 
   const messages = validTokens.map((token) => ({
     to: token,
-    // iOS uses `sound` (a bundled file name, e.g. "task_new.wav", or "default").
+    // iOS uses `sound` (a bundled file name, e.g. "tasks.wav").
     // Android uses the channel's configured sound, selected via `channelId`.
-    sound: sound || "default",
+    sound: sound || "tasks.wav",
     ...(channelId ? { channelId } : {}),
     title,
     body: subtitle || "",

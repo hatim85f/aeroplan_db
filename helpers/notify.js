@@ -12,7 +12,8 @@ const { createAndSendNotification } = require("./notificationDispatcher");
 // Domain-based notification sounds. Each domain's sound covers ALL events in
 // that domain. Keep these keys + sound file names in sync with the mobile app's
 // NOTIFICATION_CHANNELS map and the expo-notifications `sounds` list in app.json.
-// Events without a domain sound use "general" (the system default tone).
+// Events without a domain sound use the tasks sound so production/TestFlight
+// payloads still send a bundled filename rather than "default".
 const CATEGORIES = {
   tasks: { sound: "tasks.wav", channelId: "tasks" },
   planning: { sound: "plans.wav", channelId: "planning" },
@@ -20,7 +21,7 @@ const CATEGORIES = {
   orders: { sound: "orders.wav", channelId: "orders" },
   sales: { sound: "sales.wav", channelId: "sales" },
   stocks: { sound: "stocks.wav", channelId: "stocks" },
-  general: { sound: "default", channelId: "general" },
+  general: { sound: "tasks.wav", channelId: "tasks" },
 };
 
 const resolveCategory = (category) => CATEGORIES[category] || CATEGORIES.general;
