@@ -117,4 +117,6 @@ const stockUpdateSchema = new Schema(
 stockUpdateSchema.index({ stockAccountId: 1, updateDate: -1 });
 stockUpdateSchema.index({ stockAccountId: 1, "items.productId": 1, updateDate: -1 });
 
+stockUpdateSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("StockUpdate", stockUpdateSchema);

@@ -5,6 +5,7 @@ const Product = require("../../models/Product");
 const Team = require("../../models/Team");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -202,6 +203,8 @@ router.get("/", auth, async (req, res, next) => {
       query.isActive = req.query.isActive === "true";
     }
 
+    query.organizationId = resolveOrgId(user);
+
     const lines = await Line.find(query).sort({ lineName: 1 });
     const statsByLineId = await buildLineStats({
       managerId: isManagerRole(user.role) && user.role !== "admin" ? user._id : undefined,
@@ -234,6 +237,8 @@ router.get("/summary", auth, async (req, res, next) => {
     if (req.query.isActive !== undefined) {
       query.isActive = req.query.isActive === "true";
     }
+
+    query.organizationId = resolveOrgId(user);
 
     const lines = await Line.find(query).sort({ lineName: 1 });
     const statsByLineId = await buildLineStats({
@@ -373,7 +378,7 @@ router.patch("/:lineId/products", auth, requireManager, async (req, res, next) =
 
 router.post("/", auth, requireManager, async (req, res, next) => {
   try {
-    const { lineName, lineId, lineLogo, logo, description, organizationId } = req.body;
+    const { lineName, lineId, lineLogo, logo, description } = req.body;
 
     if (!lineName) {
       return res.status(400).json({
@@ -397,7 +402,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
       lineName,
       lineLogo: lineLogo || logo,
       description,
-      organizationId,
+      organizationId: resolveOrgId(req.currentUser),
       createdBy: req.user.id,
     });
 

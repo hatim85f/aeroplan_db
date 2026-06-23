@@ -326,4 +326,6 @@ forecastMonthSchema.index({
   isActive: 1,
 });
 
+forecastMonthSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("ForecastMonth", forecastMonthSchema);

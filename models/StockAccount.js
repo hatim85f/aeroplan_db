@@ -73,4 +73,6 @@ const stockAccountSchema = new Schema(
 
 stockAccountSchema.index({ accountName: "text" });
 
+stockAccountSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("StockAccount", stockAccountSchema);

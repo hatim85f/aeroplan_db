@@ -6,6 +6,7 @@ const Product = require("../../models/Product");
 const SalesChannel = require("../../models/SalesChannel");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -543,6 +544,8 @@ const buildProductQuery = (user, queryParams) => {
     query.channelPricing = { $elemMatch: channelMatch };
   }
 
+  query.organizationId = resolveOrgId(user);
+
   return query;
 };
 
@@ -591,6 +594,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
 
     const product = await Product.create({
       ...payload,
+      organizationId: resolveOrgId(req.currentUser),
       createdBy: req.user.id,
     });
 

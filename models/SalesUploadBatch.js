@@ -151,4 +151,6 @@ salesUploadBatchSchema.index({ uploadedBy: 1, uploadDate: -1 });
 salesUploadBatchSchema.index({ uploadSessionId: 1, year: 1, month: 1 });
 salesUploadBatchSchema.index({ fileName: "text", mappingName: "text", notes: "text" });
 
+salesUploadBatchSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("SalesUploadBatch", salesUploadBatchSchema);

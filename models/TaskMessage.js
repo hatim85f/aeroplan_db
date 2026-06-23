@@ -22,4 +22,6 @@ const taskMessageSchema = new Schema(
 
 taskMessageSchema.index({ taskId: 1, createdAt: 1 });
 
+taskMessageSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("TaskMessage", taskMessageSchema);

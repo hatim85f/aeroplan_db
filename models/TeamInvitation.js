@@ -50,4 +50,6 @@ const teamInvitationSchema = new Schema(
   { timestamps: true },
 );
 
+teamInvitationSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("TeamInvitation", teamInvitationSchema);

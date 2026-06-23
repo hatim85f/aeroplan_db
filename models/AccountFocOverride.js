@@ -69,4 +69,6 @@ accountFocOverrideSchema.path("endDate").validate(function validateEndDate(value
 accountFocOverrideSchema.index({ accountId: 1, "overrides.productId": 1 });
 accountFocOverrideSchema.index({ startDate: 1, endDate: 1 });
 
+accountFocOverrideSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("AccountFocOverride", accountFocOverrideSchema);

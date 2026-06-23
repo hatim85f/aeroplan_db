@@ -58,4 +58,6 @@ salesSheetMappingSchema.index({
 });
 salesSheetMappingSchema.index({ status: 1, isDefault: 1 });
 
+salesSheetMappingSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("SalesSheetMapping", salesSheetMappingSchema);

@@ -32,4 +32,6 @@ planningVisitSchema.index({ managerId: 1, visitDate: 1 });
 planningVisitSchema.index({ teamId: 1, visitDate: 1 });
 planningVisitSchema.index({ year: 1, month: 1 });
 
+planningVisitSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("PlanningVisit", planningVisitSchema);

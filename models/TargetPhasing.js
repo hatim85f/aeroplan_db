@@ -122,4 +122,6 @@ targetPhasingSchema.index({
   lineId: "text",
 });
 
+targetPhasingSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("TargetPhasing", targetPhasingSchema);

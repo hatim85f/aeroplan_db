@@ -4,6 +4,7 @@ const auth = require("../../middleware/auth");
 const SalesChannel = require("../../models/SalesChannel");
 const User = require("../../models/User");
 const { isManagerRole } = require("../../helpers/roles");
+const { resolveOrgId } = require("../../helpers/tenancy");
 
 const router = express.Router();
 
@@ -190,6 +191,8 @@ const buildSalesChannelQuery = (user, queryParams) => {
     ];
   }
 
+  query.organizationId = resolveOrgId(user);
+
   return query;
 };
 
@@ -230,6 +233,7 @@ router.post("/", auth, requireManager, async (req, res, next) => {
 
     const salesChannel = await SalesChannel.create({
       ...payload,
+      organizationId: resolveOrgId(req.currentUser),
       createdBy: req.user.id,
     });
 

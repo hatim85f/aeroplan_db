@@ -145,4 +145,6 @@ salesDetectionRuleSchema.index({
 });
 salesDetectionRuleSchema.index({ status: 1, isActive: 1, priority: 1 });
 
+salesDetectionRuleSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("SalesDetectionRule", salesDetectionRuleSchema);

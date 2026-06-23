@@ -418,4 +418,6 @@ salesRecordSchema.index({
   matchNotes: "text",
 });
 
+salesRecordSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("SalesRecord", salesRecordSchema);

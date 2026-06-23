@@ -170,4 +170,6 @@ accountSchema.pre("validate", function normalizeAccountKeys(next) {
   next();
 });
 
+accountSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("Account", accountSchema);

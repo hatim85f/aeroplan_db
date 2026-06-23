@@ -64,4 +64,6 @@ const accountRepAssignmentSchema = new Schema(
 
 accountRepAssignmentSchema.index({ accountId: 1, userId: 1, startDate: 1 });
 
+accountRepAssignmentSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("AccountRepAssignment", accountRepAssignmentSchema);

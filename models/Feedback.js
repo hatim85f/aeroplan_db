@@ -26,4 +26,6 @@ const feedbackSchema = new Schema(
 
 feedbackSchema.index({ createdAt: -1 });
 
+feedbackSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("Feedback", feedbackSchema);

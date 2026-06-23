@@ -90,4 +90,6 @@ sharedSalesRuleSchema.index({
 });
 sharedSalesRuleSchema.index({ notes: "text" });
 
+sharedSalesRuleSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("SharedSalesRule", sharedSalesRuleSchema);

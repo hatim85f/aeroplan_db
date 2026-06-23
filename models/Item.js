@@ -45,4 +45,6 @@ const itemSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+itemSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model('Item', itemSchema);

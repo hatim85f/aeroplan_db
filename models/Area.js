@@ -79,4 +79,6 @@ areaSchema.pre("validate", function syncAreaStatus(next) {
 
 areaSchema.index({ areaName: "text", areaCode: "text", description: "text" });
 
+areaSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("Area", areaSchema);

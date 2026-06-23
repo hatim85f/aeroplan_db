@@ -115,4 +115,6 @@ salesTeamMemberSchema.pre("validate", function normalizeAndValidate(next) {
   next();
 });
 
+salesTeamMemberSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("SalesTeamMember", salesTeamMemberSchema);

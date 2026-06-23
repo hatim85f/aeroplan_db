@@ -34,4 +34,6 @@ const planningAccountSchema = new Schema(
 
 planningAccountSchema.index({ accountName: "text" });
 
+planningAccountSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("PlanningAccount", planningAccountSchema);

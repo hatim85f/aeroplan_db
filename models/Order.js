@@ -277,4 +277,6 @@ orderSchema.index({ medicalRepId: 1, orderDate: -1 });
 orderSchema.index({ "account.accountId": 1, orderDate: -1 });
 orderSchema.index({ status: 1, isActive: 1, orderDate: -1 });
 
+orderSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("Order", orderSchema);

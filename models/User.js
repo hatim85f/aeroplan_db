@@ -154,6 +154,10 @@ const userSchema = new Schema(
       trim: true,
       default: createAppId,
     },
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      index: true,
+    },
     emailVerified: {
       type: Boolean,
       default: false,

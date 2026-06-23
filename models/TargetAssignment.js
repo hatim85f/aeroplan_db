@@ -166,4 +166,6 @@ targetAssignmentSchema.index({
   notes: "text",
 });
 
+targetAssignmentSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("TargetAssignment", targetAssignmentSchema);

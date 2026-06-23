@@ -81,4 +81,6 @@ taskSchema.index({ "assignedUsers.userId": 1, isActive: 1 });
 taskSchema.index({ managerId: 1, taskStatus: 1 });
 taskSchema.index({ teamId: 1, dueDate: 1 });
 
+taskSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("Task", taskSchema);

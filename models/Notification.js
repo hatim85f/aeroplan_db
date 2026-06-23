@@ -60,4 +60,6 @@ const notificationSchema = new Schema(
   { timestamps: true },
 );
 
+notificationSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("Notification", notificationSchema);

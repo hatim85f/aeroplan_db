@@ -37,4 +37,6 @@ const taskOccurrenceSchema = new Schema(
 
 taskOccurrenceSchema.index({ taskId: 1, userId: 1, periodKey: 1 }, { unique: true });
 
+taskOccurrenceSchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("TaskOccurrence", taskOccurrenceSchema);

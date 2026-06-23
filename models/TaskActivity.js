@@ -16,4 +16,6 @@ const taskActivitySchema = new Schema(
 
 taskActivitySchema.index({ taskId: 1, createdAt: -1 });
 
+taskActivitySchema.plugin(require("../helpers/orgPlugin"));
+
 module.exports = mongoose.model("TaskActivity", taskActivitySchema);
