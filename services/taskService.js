@@ -223,6 +223,13 @@ const canManageTask = (actor, task) =>
     String(task.managerId) === String(actor._id) || String(task.createdBy) === String(actor._id)
   ));
 
+// Delete is allowed for the person who created the task (any role) or the
+// task's manager / admin.
+const canDeleteTask = (actor, task) =>
+  actor.role === "admin"
+  || String(task.createdBy) === String(actor._id)
+  || (isManagerRole(actor.role) && String(task.managerId) === String(actor._id));
+
 /* ── Lists ──────────────────────────────────────── */
 
 const serializeCard = (task, actorId, countsByTask, lastByTask) => {
@@ -457,6 +464,7 @@ const getDashboard = async ({ actor, id, year, month }) => {
       canCompleteStep: !manage || active.some((u) => String(u.userId) === String(actor._id)),
       canCompleteRecurring: active.some((u) => String(u.userId) === String(actor._id)),
       canCancel: manage,
+      canDelete: canDeleteTask(actor, task),
     },
   };
 };
@@ -489,7 +497,7 @@ const updateTask = async ({ actor, id, body }) => {
 
 const deleteTask = async ({ actor, id }) => {
   const task = await getScopedTask(actor, id);
-  if (!canManageTask(actor, task)) throw makeError("Only the task manager or admin can archive this task", 403);
+  if (!canDeleteTask(actor, task)) throw makeError("Only the task creator or their manager can delete this task", 403);
   const assigneeIds = activeAssignees(task).map((u) => u.userId);
   task.isActive = false;
   task.taskStatus = "archived";
